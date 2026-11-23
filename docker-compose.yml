@@ -1,0 +1,63 @@
+# 剪藏 (Jiancang) —— 家用 Ubuntu NUC 自托管编排
+#
+# 首次部署（NUC 用户 sheldon UID/GID 为 1001）：
+#   1) cp .env.example .env   然后至少改掉 API_TOKEN（及 LLM_API_KEY，若启用 AI 摘要）
+#   2) mkdir -p data
+#   3) docker compose up -d --build
+#   4) 验证：curl http://127.0.0.1:${PORT:-8420}/health
+#
+# 端口说明：8420 避开 NUC 上已占用的 80/443/1933/3000/3080/7890/8870/22000。
+
+services:
+  jiancang:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        # 国内 PyPI 镜像；海外网络可改成 https://pypi.org/simple
+        UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        # 对齐 NUC 宿主机用户 sheldon (UID/GID 1001)，避免 ./data 挂载权限冲突
+        APP_UID: ${APP_UID:-1001}
+        APP_GID: ${APP_GID:-1001}
+    image: jiancang:latest
+    container_name: jiancang
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      # 时区固定为上海，保证「每日复习额度」按本地自然日重置
+      TZ: Asia/Shanghai
+      # 容器内数据目录（SQLite 库 + 本地存档图片），对应下方 ./data 挂载
+      DATA_DIR: /app/data
+      # 出站流量默认走宿主机 mihomo 的 :7890 混合端口做分流
+      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7890}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7890}
+      # 内网 / 本地回环 / NUC 上的 new-api(:3000) 与 mediacrawler-mcp(:8870) 必须直连
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal,192.168.0.0/16,100.64.0.0/10,172.16.0.0/12}
+
+    # 让容器内能用 host.docker.internal 访问宿主机服务：
+    # mihomo :7890（代理）、new-api :3000（本地大模型网关）、可选 mediacrawler-mcp :8870（小红书兜底）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "${PORT:-8420}:8420"
+
+    volumes:
+      # SQLite 数据库 + 存档图片全部落在这里，备份只需 tar 走 ./data
+      - ./data:/app/data
+
+    healthcheck:
+      # 纯标准库探针，显式禁用代理确保 127.0.0.1 直连
+      test: ["CMD", "python", "-c", "import sys, urllib.request\ntry:\n    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))\n    ok = opener.open('http://127.0.0.1:8420/health', timeout=4).status == 200\nexcept Exception:\n    ok = False\nsys.exit(0 if ok else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

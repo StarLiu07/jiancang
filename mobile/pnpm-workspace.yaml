@@ -1,0 +1,13 @@
+# pnpm 11 reads install settings from this file (not .npmrc / package.json).
+# A flat node_modules is required for React Native / Metro resolution.
+nodeLinker: hoisted
+
+# Pin React Navigation to the versions shipped with Expo SDK 52 / expo-router 4.
+# Newer 7.x minors dropped `query-string`, which expo-router 4 still requires.
+overrides:
+  '@react-navigation/native': 7.0.14
+  '@react-navigation/core': 7.3.1
+  '@react-navigation/routers': 7.3.1
+  '@react-navigation/bottom-tabs': 7.2.0
+  '@react-navigation/native-stack': 7.2.0
+  '@react-navigation/elements': 2.2.5

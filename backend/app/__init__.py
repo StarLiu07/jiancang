@@ -1,0 +1,1 @@
+"""Jiancang backend application package."""

@@ -9,10 +9,17 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Common build / dependency outputs
+# Common build / dependency / runtime outputs
 node_modules/
 dist/
 build/
 .venv/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
+.expo/
+web-build/
+data/
+mobile/android/
+mobile/ios/
 *.log

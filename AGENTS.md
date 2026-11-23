@@ -33,9 +33,18 @@
 
 ## 二、本项目专属约定（随代码演进补充）
 
-> 项目刚起步，以下条目在选定技术栈和跑出第一版代码后再补全，不提前空填。
-
-- **技术栈与入口**：待补充
-- **开发 / 运行命令**：待补充
-- **低成本验证命令（Tier 1：编译 / Lint / 测试）**：待补充
-- **项目红线（不可触碰的约束）**：待补充
+- **技术栈与入口**：
+  - 后端：`backend/`，Python 3.11+（`uv` + FastAPI + SQLite FTS5 trigram），入口 `app.main:app`，默认端口 `8420`。
+  - 移动端：`mobile/`，Expo SDK 52 + Expo Router 4 + TypeScript（Android 优先，支持系统分享 `ACTION_SEND` 与本地每日提醒）。
+  - 部署：根目录 `docker-compose.yml` + `backend/Dockerfile` + `.env.example`，面向家用 Ubuntu NUC（`APP_UID/GID=1001`，复用宿主机 `mihomo :7890` 与 `new-api :3000`）。
+- **开发 / 运行命令**：
+  - 后端本地运行：`cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8420`
+  - 移动端启动：`cd mobile && pnpm start`（Android 原生构建/预构建：`pnpm exec expo prebuild --platform android`）
+  - NUC 部署：`cp .env.example .env && mkdir -p data && docker compose up -d --build`
+- **低成本验证命令（Tier 1：编译 / Lint / 测试）**：
+  - 后端：`cd backend && uv run pytest -q && uv run ruff check app tests`
+  - 移动端：`cd mobile && pnpm exec tsc --noEmit && pnpm exec expo config --type public`
+- **项目红线（不可触碰的约束）**：
+  - 严禁将任何真实 API Key / Token / Cookie 写入仓库或 `.env.example`（所有凭据只放 `.env`）。
+  - 抓取或 AI 失败时绝不丢失用户原始收藏记录，必须优雅降级为 `partial` 或 `failed` 并支持重试/手动补全。
+  - 修改 `backend/app/models.py` 或路由契约时，必须同步更新 `mobile/src/types.ts` 与 `mobile/src/api/client.ts`。
