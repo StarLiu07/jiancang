@@ -21,8 +21,8 @@ ENV UV_INDEX_URL=${UV_INDEX_URL} \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PATH="/app/.venv/bin:${PATH}"
 
-# uv / uvx 二进制（多阶段 COPY，比安装脚本快且无 curl 依赖）
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# 从国内 PyPI 镜像装 uv（避免国内拉 ghcr.io 卡顿）
+RUN pip install --no-cache-dir -i "${UV_INDEX_URL}" uv
 
 WORKDIR /app
 

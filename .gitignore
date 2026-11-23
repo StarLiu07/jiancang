@@ -22,4 +22,5 @@ web-build/
 data/
 mobile/android/
 mobile/ios/
+*.apk
 *.log
