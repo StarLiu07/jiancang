@@ -20,9 +20,11 @@ import { FadeSlideIn, SpringPressable } from '../../src/components/Motion';
 import { useToast } from '../../src/components/Toast';
 import { BASE_URL_PRESETS, type AppSettings } from '../../src/storage/settings';
 import { useSettings } from '../../src/store/settings';
+import { useAppUpdate } from '../../src/store/update';
 import { colors, elevation, fonts, radius, spacing } from '../../src/theme';
 import type { HealthResponse } from '../../src/types';
 import { formatClock, formatDateTime } from '../../src/utils/format';
+import { formatFileSize } from '../../src/utils/updateVersion';
 import {
   cancelDailyReviewReminder,
   hasScheduledDailyReminder,
@@ -35,6 +37,7 @@ const APP_ICON = require('../../assets/icon.png');
 export default function SettingsScreen() {
   const { settings, ready, update } = useSettings();
   const { show } = useToast();
+  const appUpdate = useAppUpdate();
 
   const [baseUrl, setBaseUrl] = useState(settings.baseUrl);
   const [token, setToken] = useState(settings.token);
@@ -149,7 +152,19 @@ export default function SettingsScreen() {
     }
   };
 
-  const appVersion = Constants.expoConfig?.version ?? '0.3.0';
+  const appVersion = Constants.expoConfig?.version ?? '0.4.0';
+  const hasUpdate = appUpdate.release !== null;
+  const updateHint = appUpdate.checking
+    ? '正在查询 GitHub 最新 Release…'
+    : appUpdate.release
+      ? `发现 v${appUpdate.release.version} · ${formatFileSize(appUpdate.release.apkSizeBytes)}`
+      : appUpdate.checkStatus === 'up-to-date'
+        ? `已是最新版本 v${appVersion}`
+        : appUpdate.checkStatus === 'ignored'
+          ? `已忽略 v${appUpdate.ignoredVersion ?? ''}，可手动再次检查`
+          : appUpdate.checkStatus === 'error'
+            ? '上次检查失败，请检查网络或代理后重试'
+            : '冷启动会静默检查 GitHub Release，也可手动查询';
   // 未测试时保持中性墨色，避免未测试就亮绿点
   const statusColor = health ? colors.success : testError ? colors.danger : colors.muted;
   const statusSummary = health
@@ -384,6 +399,55 @@ export default function SettingsScreen() {
             </>
           )}
         </SpringPressable>
+
+        <View style={styles.group}>
+          <Text style={styles.groupTitle}>应用更新</Text>
+          <View style={styles.section}>
+            <View style={styles.updateRow}>
+              <View style={styles.updateSeal}>
+                <Ionicons name="cloud-download-outline" size={18} color={colors.accent} />
+              </View>
+              <View style={styles.updateText}>
+                <Text style={styles.switchLabel}>剪藏 · v{appVersion}</Text>
+                <Text style={styles.switchHint}>{updateHint}</Text>
+              </View>
+              {hasUpdate ? (
+                <View style={styles.updateBadge}>
+                  <Text style={styles.updateBadgeText}>新版本</Text>
+                </View>
+              ) : null}
+            </View>
+
+            {hasUpdate ? (
+              <SpringPressable
+                onPress={appUpdate.openModal}
+                scaleTo={0.97}
+                contentStyle={styles.updateAvailableButton}
+              >
+                <Ionicons name="sparkles-outline" size={15} color={colors.accent} />
+                <Text style={styles.updateAvailableText}>
+                  查看 v{appUpdate.release?.version} 更新
+                </Text>
+              </SpringPressable>
+            ) : null}
+
+            <SpringPressable
+              onPress={() => void appUpdate.checkForUpdate()}
+              disabled={appUpdate.checking}
+              scaleTo={0.97}
+              contentStyle={[styles.testButton, appUpdate.checking && styles.pressed]}
+            >
+              {appUpdate.checking ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : (
+                <Ionicons name="refresh-outline" size={16} color={colors.textSecondary} />
+              )}
+              <Text style={styles.testButtonText}>
+                {appUpdate.checking ? '正在检查 GitHub Release…' : '检查更新'}
+              </Text>
+            </SpringPressable>
+          </View>
+        </View>
 
         <View style={styles.about}>
           <Text style={styles.aboutTitle}>剪藏 · v{appVersion}</Text>
@@ -712,5 +776,53 @@ const styles = StyleSheet.create({
   aboutMuted: {
     color: colors.muted,
     fontSize: 10.5,
+  },
+  updateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  updateSeal: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: colors.accentSoft,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.accentBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  updateText: {
+    flex: 1,
+    gap: 2,
+  },
+  updateBadge: {
+    backgroundColor: colors.accentSoft,
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.accentBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  updateBadgeText: {
+    color: colors.accent,
+    fontSize: 10.5,
+    fontWeight: '600',
+  },
+  updateAvailableButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: colors.accentSoft,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.accentBorder,
+    paddingVertical: 10,
+  },
+  updateAvailableText: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
