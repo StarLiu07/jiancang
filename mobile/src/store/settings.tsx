@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import type { ApiConfig } from '../types';
+import type { ApiConfig, LocalAiConfig } from '../types';
 import {
+  DEFAULT_LLM_MODEL,
   DEFAULT_SETTINGS,
   loadSettings,
   saveSettings,
@@ -11,6 +12,7 @@ import {
 interface SettingsContextValue {
   settings: AppSettings;
   config: ApiConfig;
+  localAiConfig: LocalAiConfig;
   ready: boolean;
   reload: () => Promise<void>;
   update: (patch: Partial<AppSettings>) => Promise<AppSettings>;
@@ -43,6 +45,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       settings,
       ready,
       config: { baseUrl: settings.baseUrl, token: settings.token },
+      localAiConfig: {
+        baseUrl: settings.llmBaseUrl.trim(),
+        apiKey: settings.llmApiKey.trim(),
+        model: settings.llmModel.trim() || DEFAULT_LLM_MODEL,
+      },
       reload,
       update,
     }),
