@@ -298,7 +298,7 @@ test('parseFxTwitterPayload builds a complete X clip', () => {
       text: 'Hello world\nsecond line',
       url: 'https://x.com/jack/status/20',
       created_at: 'Wed Nov 20 00:00:00 +0000 2024',
-      author: { name: 'Jack', screen_name: 'jack' },
+      author: { name: 'Jack Dorsey', screen_name: 'jack' },
       media: {
         photos: [{ url: 'https://pbs.twimg.com/media/a.jpg' }],
         videos: [{ thumbnail_url: 'https://pbs.twimg.com/media/v.jpg' }],
@@ -321,7 +321,7 @@ test('parseFxTwitterPayload builds a complete X clip', () => {
   assert.equal(content.platform, 'x');
   assert.equal(content.url, 'https://x.com/jack/status/20');
   assert.equal(content.title, 'Hello world');
-  assert.equal(content.author, 'Jack (@jack)');
+  assert.equal(content.author, 'Jack Dorsey (@jack)');
   assert.equal(content.published_at, 'Wed Nov 20 00:00:00 +0000 2024');
   assert.deepEqual(content.image_urls, [
     'https://pbs.twimg.com/media/a.jpg',

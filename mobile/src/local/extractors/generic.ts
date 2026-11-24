@@ -111,10 +111,14 @@ function parseRoot(markup: string | HTMLElement): HTMLElement {
 
 export function tidyMarkdown(text: string): string {
   let value = (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  value = value.replace(WHITESPACE_RE, ' ');
   value = value
     .split('\n')
-    .map((line) => line.replace(/[ \t]+$/, ''))
+    .map((line) => {
+      const leadMatch = /^[ \t]*/.exec(line);
+      const lead = leadMatch ? leadMatch[0] : '';
+      const rest = line.slice(lead.length).replace(WHITESPACE_RE, ' ').replace(/[ \t]+$/, '');
+      return rest ? `${lead}${rest}` : '';
+    })
     .join('\n');
   value = value.replace(BLANK_LINES_RE, '\n\n');
   return value.trim();

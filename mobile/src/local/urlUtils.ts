@@ -247,14 +247,15 @@ function percentEncode(value: string): string {
   return output;
 }
 
-function parseQueryPairs(query: string): Array<[string, string]> {
-  const pairs: Array<[string, string]> = [];
+function parseQueryPairs(query: string): Array<[string, string, boolean]> {
+  const pairs: Array<[string, string, boolean]> = [];
   for (const chunk of query.split('&')) {
     if (!chunk) continue;
     const equalsAt = chunk.indexOf('=');
-    const rawKey = equalsAt >= 0 ? chunk.slice(0, equalsAt) : chunk;
-    const rawValue = equalsAt >= 0 ? chunk.slice(equalsAt + 1) : '';
-    pairs.push([percentDecode(rawKey), percentDecode(rawValue)]);
+    const hasEquals = equalsAt >= 0;
+    const rawKey = hasEquals ? chunk.slice(0, equalsAt) : chunk;
+    const rawValue = hasEquals ? chunk.slice(equalsAt + 1) : '';
+    pairs.push([percentDecode(rawKey), percentDecode(rawValue), hasEquals]);
   }
   return pairs;
 }
@@ -280,17 +281,21 @@ export function normalizeUrl(url: string, platform?: Platform): string {
     netloc = 'x.com';
   }
 
-  const kept: Array<[string, string]> = [];
-  for (const [key, queryValue] of parseQueryPairs(parts.query)) {
+  const kept: Array<[string, string, boolean]> = [];
+  for (const [key, queryValue, hasEquals] of parseQueryPairs(parts.query)) {
     if (KEEP_PARAMS.has(key)) {
-      kept.push([key, queryValue]);
+      kept.push([key, queryValue, hasEquals]);
       continue;
     }
     if (isTracking(key)) continue;
-    kept.push([key, queryValue]);
+    kept.push([key, queryValue, hasEquals]);
   }
 
-  const query = kept.map(([key, queryValue]) => `${percentEncode(key)}=${percentEncode(queryValue)}`).join('&');
+  const query = kept
+    .map(([key, queryValue, hasEquals]) =>
+      hasEquals ? `${percentEncode(key)}=${percentEncode(queryValue)}` : percentEncode(key),
+    )
+    .join('&');
   let path = parts.path || '';
   if (path === '/' && !query) path = '';
   return `${scheme}://${netloc}${path}${query ? `?${query}` : ''}`;
