@@ -1,20 +1,25 @@
 import { useShareIntent } from 'expo-share-intent';
 import { useEffect, useRef } from 'react';
 
-import { api, pickErrorMessage } from '../api/client';
+import { pickErrorMessage } from '../api/client';
 import { useToast } from '../components/Toast';
+import { localRepo } from '../local/repository';
 import { useSettings } from '../store/settings';
 import { buildSharePayload } from '../utils/url';
 
 /**
- * Bridges Android's system share sheet into `POST /api/clips`.
+ * Bridges Android's system share sheet into the local-first repository.
+ *
+ * The clip lands in on-device SQLite the moment the user shares it (no network,
+ * no NUC required), then the background ingestion pipeline extracts content and
+ * optionally enriches it with the configured public LLM endpoint.
  *
  * expo-share-intent uses `requireOptionalNativeModule`, so in Expo Go (or any
  * build without the native module) `useShareIntent` simply never becomes ready
  * and this hook stays inert instead of crashing.
  */
 export function useShareCapture(): void {
-  const { settings, ready } = useSettings();
+  const { localAiConfig, ready } = useSettings();
   const { show } = useToast();
   const { isReady, hasShareIntent, shareIntent, resetShareIntent } = useShareIntent({
     scheme: 'jiancang',
@@ -23,11 +28,9 @@ export function useShareCapture(): void {
 
   const busyRef = useRef(false);
   const submittingRef = useRef<string | null>(null);
-  const baseUrlRef = useRef(settings.baseUrl);
-  const tokenRef = useRef(settings.token);
+  const aiConfigRef = useRef(localAiConfig);
 
-  baseUrlRef.current = settings.baseUrl;
-  tokenRef.current = settings.token;
+  aiConfigRef.current = localAiConfig;
 
   useEffect(() => {
     if (!ready || !isReady || !hasShareIntent) return;
@@ -47,10 +50,7 @@ export function useShareCapture(): void {
 
     const submit = async () => {
       try {
-        const result = await api.createClip(
-          { baseUrl: baseUrlRef.current, token: tokenRef.current },
-          { input: payload },
-        );
+        const result = await localRepo.createClip({ input: payload }, aiConfigRef.current);
         show(result.deduplicated ? '已在收藏库' : '已剪藏', result.deduplicated ? 'info' : 'success');
       } catch (error) {
         show(`提交失败：${pickErrorMessage(error)}`, 'error');

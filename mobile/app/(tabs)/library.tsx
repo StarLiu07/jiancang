@@ -14,16 +14,22 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { api, pickErrorMessage } from '../../src/api/client';
+import { pickErrorMessage } from '../../src/api/client';
 import { ClipCard } from '../../src/components/ClipCard';
 import { FadeSlideIn, SkeletonList, SpringPressable } from '../../src/components/Motion';
 import { QuickAddModal, type QuickAddPayload } from '../../src/components/QuickAddModal';
 import { useToast } from '../../src/components/Toast';
+import { localRepo, subscribeLocalChanges } from '../../src/local/repository';
 import { useSettings } from '../../src/store/settings';
+import { useSync } from '../../src/store/sync';
 import { colors, elevation, fonts, radius, spacing } from '../../src/theme';
-import type { ClipSummary, Platform, ReviewState, TagItem } from '../../src/types';
+import type { ClipListQuery, ClipSummary, Platform, ReviewState, TagItem } from '../../src/types';
 
 const PAGE_SIZE = 20;
+/** Largest page the local repository accepts (see `MAX_LIST_LIMIT` in db.ts). */
+const MAX_PAGE_SIZE = 100;
+/** Debounce for background ingestion / sync pulling new rows. */
+const SILENT_REFRESH_DEBOUNCE_MS = 200;
 
 const PLATFORM_FILTERS: { key: Platform | 'all'; label: string }[] = [
   { key: 'all', label: '全部' },
@@ -38,7 +44,8 @@ function ListSeparator() {
 }
 
 export default function LibraryScreen() {
-  const { config, ready } = useSettings();
+  const { localAiConfig, settings, ready } = useSettings();
+  const { syncNow } = useSync();
   const { show } = useToast();
   const router = useRouter();
 
@@ -63,6 +70,15 @@ export default function LibraryScreen() {
   const offsetRef = useRef(0);
   const requestRef = useRef(0);
 
+  const queryBase: ClipListQuery = {
+    q: debouncedQuery || undefined,
+    platform: platform === 'all' ? undefined : platform,
+    tag: tag ?? undefined,
+    review_state: reviewState,
+  };
+  const queryBaseRef = useRef(queryBase);
+  queryBaseRef.current = queryBase;
+
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 350);
     return () => clearTimeout(timer);
@@ -80,17 +96,14 @@ export default function LibraryScreen() {
 
       try {
         const offset = mode === 'more' ? offsetRef.current : 0;
-        const result = await api.listClips(
-          { baseUrl: config.baseUrl, token: config.token },
-          {
-            q: debouncedQuery || undefined,
-            platform: platform === 'all' ? undefined : platform,
-            tag: tag ?? undefined,
-            review_state: reviewState,
-            limit: PAGE_SIZE,
-            offset,
-          },
-        );
+        const result = await localRepo.listClips({
+          q: debouncedQuery || undefined,
+          platform: platform === 'all' ? undefined : platform,
+          tag: tag ?? undefined,
+          review_state: reviewState,
+          limit: PAGE_SIZE,
+          offset,
+        });
         if (requestId !== requestRef.current) return;
         offsetRef.current = offset + result.items.length;
         setItems((previous) => (mode === 'more' ? [...previous, ...result.items] : result.items));
@@ -110,18 +123,71 @@ export default function LibraryScreen() {
         }
       }
     },
-    [ready, config.baseUrl, config.token, debouncedQuery, platform, reviewState, tag],
+    [ready, debouncedQuery, platform, reviewState, tag],
   );
 
   const loadTags = useCallback(async () => {
     if (!ready) return;
     try {
-      const result = await api.listTags({ baseUrl: config.baseUrl, token: config.token });
+      const result = await localRepo.listTags();
       setTags([...result.tags].sort((a, b) => b.count - a.count).slice(0, 16));
     } catch {
       // Tags are a convenience: swallow failures so the list still works.
     }
-  }, [ready, config.baseUrl, config.token]);
+  }, [ready]);
+
+  /**
+   * Silent refresh after background ingestion / sync: re-reads the pages the
+   * user already has on screen, so the list never jumps back to page one and
+   * newly pulled cards show up without a visible loading state.
+   */
+  const refreshSilently = useCallback(async () => {
+    if (!ready) return;
+    const generation = requestRef.current;
+    const loadedAtStart = offsetRef.current;
+    const target = Math.max(loadedAtStart, PAGE_SIZE);
+    const collected: ClipSummary[] = [];
+    let total = 0;
+
+    try {
+      while (collected.length < target) {
+        const limit = Math.min(MAX_PAGE_SIZE, Math.max(PAGE_SIZE, target - collected.length));
+        const result = await localRepo.listClips({
+          ...queryBaseRef.current,
+          limit,
+          offset: collected.length,
+        });
+        collected.push(...result.items);
+        total = result.total;
+        if (result.items.length === 0 || collected.length >= result.total) break;
+      }
+    } catch {
+      return;
+    }
+
+    // A user-initiated load took over (or appended a page) while we were
+    // reading: let it win so the visible list never shrinks by accident.
+    if (requestRef.current !== generation || offsetRef.current !== loadedAtStart) return;
+    offsetRef.current = collected.length;
+    setItems(collected);
+    setTotal(total);
+    void loadTags();
+  }, [ready, loadTags]);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeLocalChanges(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        void refreshSilently();
+      }, SILENT_REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [refreshSilently]);
 
   useFocusEffect(
     useCallback(() => {
@@ -130,10 +196,14 @@ export default function LibraryScreen() {
     }, [loadPage, loadTags]),
   );
 
-  const refreshAll = () => {
+  const refreshAll = useCallback(() => {
     void loadPage('refresh');
     void loadTags();
-  };
+    if (settings.syncEnabled && settings.baseUrl.trim()) {
+      // Best effort: an unreachable NUC resolves quietly, never a toast.
+      void syncNow({ silent: true }).catch(() => undefined);
+    }
+  }, [loadPage, loadTags, settings.syncEnabled, settings.baseUrl, syncNow]);
 
   const handleEndReached = () => {
     if (loading || loadingMore || refreshing) return;
@@ -145,15 +215,15 @@ export default function LibraryScreen() {
     setAdding(true);
     setQuickAddError(null);
     try {
-      const result = await api.createClip(
-        { baseUrl: config.baseUrl, token: config.token },
+      const result = await localRepo.createClip(
         {
           input: payload.input,
           user_note: payload.user_note || undefined,
           tags: payload.tags.length ? payload.tags : undefined,
         },
+        localAiConfig,
       );
-      show(result.deduplicated ? '已在收藏目录' : '已交给后台解析', result.deduplicated ? 'info' : 'success');
+      show(result.deduplicated ? '已在收藏目录' : '已收进书房，正在整理', result.deduplicated ? 'info' : 'success');
       setQuickAddVisible(false);
       void loadPage('refresh');
       void loadTags();
@@ -316,7 +386,7 @@ export default function LibraryScreen() {
               <Text style={styles.emptyText}>
                 {activeFilterCount
                   ? '换个关键词或清空筛选条件试试。'
-                  : '从小红书、公众号、X 分享，或点右下角 + 手动收入书房。'}
+                  : '从小红书、公众号、X 分享，或点右下角 + 手动收入书房。剪藏先存在这台手机上，联网时再同步到 NUC。'}
               </Text>
               {activeFilterCount ? (
                 <SpringPressable

@@ -14,17 +14,24 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { api, pickErrorMessage } from '../../src/api/client';
+import { pickErrorMessage } from '../../src/api/client';
 import { ClipboardBanner } from '../../src/components/ClipboardBanner';
 import { FadeSlideIn, MOTION, SkeletonHeroCard, SpringPressable } from '../../src/components/Motion';
 import { ReviewDeck, type ReviewDeckHandle } from '../../src/components/ReviewDeck';
 import { useToast } from '../../src/components/Toast';
 import { useClipboardLink } from '../../src/hooks/useClipboardLink';
+import { localRepo, subscribeLocalChanges } from '../../src/local/repository';
 import { useSettings } from '../../src/store/settings';
+import { useSync } from '../../src/store/sync';
 import { colors, elevation, fonts, radius, spacing } from '../../src/theme';
 import type { ClipDetail, ReviewActionType } from '../../src/types';
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+
+/** Debounce proof of background ingestion finishing / sync pulling new cards. */
+const SILENT_REFRESH_DEBOUNCE_MS = 260;
+/** Retry later while the user is mid-swipe or a review action is in flight. */
+const SILENT_REFRESH_RETRY_MS = 400;
 
 function pad2(n: number): string {
   return String(Math.max(0, n)).padStart(2, '0');
@@ -69,7 +76,8 @@ function ProgressSegment({ done, current }: { done: boolean; current: boolean })
 }
 
 export default function ReviewTodayScreen() {
-  const { config, ready } = useSettings();
+  const { localAiConfig, settings, ready } = useSettings();
+  const { syncNow } = useSync();
   const { show } = useToast();
   const router = useRouter();
 
@@ -90,6 +98,24 @@ export default function ReviewTodayScreen() {
   const deckRef = useRef<ReviewDeckHandle>(null);
   const refreshSpin = useRef(new Animated.Value(0)).current;
   const doneBadgeScale = useRef(new Animated.Value(0.7)).current;
+
+  // Refs mirror state so the change-bus listener can read fresh values without
+  // resubscribing (a resubscribe mid-swipe would lose the pending debounce).
+  const itemsRef = useRef<ClipDetail[]>(items);
+  const indexRef = useRef(index);
+  const loadingRef = useRef(loading);
+  const refreshingRef = useRef(refreshing);
+  const draggingRef = useRef(deckDragging);
+  const actingRef = useRef(acting);
+  const mountedRef = useRef(true);
+  const silentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  itemsRef.current = items;
+  indexRef.current = index;
+  loadingRef.current = loading;
+  refreshingRef.current = refreshing;
+  draggingRef.current = deckDragging;
+  actingRef.current = acting;
 
   const { link, dismiss, refresh: refreshClipboard } = useClipboardLink(ready);
 
@@ -115,7 +141,7 @@ export default function ReviewTodayScreen() {
       }
       setError(null);
       try {
-        const data = await api.reviewToday({ baseUrl: config.baseUrl, token: config.token }, 5);
+        const data = await localRepo.reviewToday(5);
         if (requestId !== requestRef.current) return;
         setItems(data.items);
         setIndex(0);
@@ -133,13 +159,100 @@ export default function ReviewTodayScreen() {
         }
       }
     },
-    [ready, config.baseUrl, config.token, spinRefreshIcon],
+    [ready, spinRefreshIcon],
   );
 
   const loadRef = useRef(load);
   loadRef.current = load;
   const readyRef = useRef(ready);
   readyRef.current = ready;
+
+  /**
+   * Silent deck refresh: keeps the card the user is looking at in place (a
+   * freshly finished extraction updates it by id) and never surfaces errors.
+   */
+  const refreshDeckSilently = useCallback(async () => {
+    if (!readyRef.current || !loadedRef.current) return;
+    if (loadingRef.current || refreshingRef.current || draggingRef.current || actingRef.current) {
+      return;
+    }
+
+    const generation = requestRef.current;
+    const currentId = itemsRef.current[indexRef.current]?.id ?? null;
+
+    try {
+      const data = await localRepo.reviewToday(5);
+      // A user-initiated load took over while we were reading: let it win.
+      if (!mountedRef.current || requestRef.current !== generation) return;
+
+      setReviewedToday(data.reviewed_today);
+      setDailyTarget(data.daily_target || 5);
+      setTotalActive(data.total_active);
+
+      if (!currentId) {
+        // Empty or finished screen: newly arrived cards may now be reviewable.
+        setItems(data.items);
+        setIndex(0);
+        return;
+      }
+
+      const position = data.items.findIndex((item) => item.id === currentId);
+      if (position < 0) {
+        // The open card left the queue (deleted/archived elsewhere). Keep it on
+        // screen instead of yanking it away mid-read; the user's next action
+        // re-syncs the deck.
+        return;
+      }
+
+      setItems(data.items);
+      setIndex(position);
+    } catch {
+      // Silent by contract: the next local change retries.
+    }
+  }, []);
+
+  const scheduleSilentRefresh = useCallback(
+    (delay = SILENT_REFRESH_DEBOUNCE_MS) => {
+      if (silentTimerRef.current) clearTimeout(silentTimerRef.current);
+      silentTimerRef.current = setTimeout(() => {
+        silentTimerRef.current = null;
+        if (!mountedRef.current) return;
+        if (loadingRef.current || refreshingRef.current || draggingRef.current || actingRef.current) {
+          scheduleSilentRefresh(SILENT_REFRESH_RETRY_MS);
+          return;
+        }
+        void refreshDeckSilently();
+      }, delay);
+    },
+    [refreshDeckSilently],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const unsubscribe = subscribeLocalChanges(() => {
+      if (!readyRef.current || !loadedRef.current) return;
+      scheduleSilentRefresh();
+    });
+    return () => {
+      mountedRef.current = false;
+      unsubscribe();
+      if (silentTimerRef.current) {
+        clearTimeout(silentTimerRef.current);
+        silentTimerRef.current = null;
+      }
+    };
+  }, [scheduleSilentRefresh]);
+
+  const requestSilentSync = useCallback(() => {
+    if (!settings.syncEnabled || !settings.baseUrl.trim()) return;
+    // `syncNow({ silent: true })` is best effort and resolves offline quietly.
+    void syncNow({ silent: true }).catch(() => undefined);
+  }, [settings.syncEnabled, settings.baseUrl, syncNow]);
+
+  const refreshDeck = useCallback(() => {
+    void loadRef.current('refresh');
+    requestSilentSync();
+  }, [requestSilentSync]);
 
   useFocusEffect(
     useCallback(() => {
@@ -168,7 +281,7 @@ export default function ReviewTodayScreen() {
     if (!link || capturing) return;
     setCapturing(true);
     try {
-      const result = await api.createClip({ baseUrl: config.baseUrl, token: config.token }, { input: link });
+      const result = await localRepo.createClip({ input: link }, localAiConfig);
       show(result.deduplicated ? '已在收藏目录' : '已收进书房', result.deduplicated ? 'info' : 'success');
       await dismiss(link);
     } catch (err) {
@@ -192,11 +305,7 @@ export default function ReviewTodayScreen() {
       setReviewedToday(previousReviewed + 1);
 
       try {
-        const result = await api.reviewAction(
-          { baseUrl: config.baseUrl, token: config.token },
-          clip.id,
-          { action },
-        );
+        const result = await localRepo.reviewAction(clip.id, { action });
         setReviewedToday(result.reviewed_today);
         setDailyTarget(result.daily_target || dailyTarget);
         setTotalActive((value) => Math.max(0, value - (action === 'snooze' ? 0 : 1)));
@@ -209,7 +318,7 @@ export default function ReviewTodayScreen() {
         setActing(false);
       }
     },
-    [items, index, acting, reviewedToday, config.baseUrl, config.token, dailyTarget, show],
+    [items, index, acting, reviewedToday, dailyTarget, show],
   );
 
   const handleButtonAction = (action: ReviewActionType) => {
@@ -245,7 +354,7 @@ export default function ReviewTodayScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => void load('refresh')}
+            onRefresh={refreshDeck}
             tintColor={colors.accent}
             colors={[colors.accent]}
             progressBackgroundColor={colors.sheet}
@@ -262,7 +371,7 @@ export default function ReviewTodayScreen() {
             <View style={styles.progressCaptionRow}>
               <Text style={styles.progressCaption}>今日进度</Text>
               <SpringPressable
-                onPress={() => void load('refresh')}
+                onPress={refreshDeck}
                 scaleTo={0.88}
                 hitSlop={8}
                 contentStyle={styles.refreshIconBtn}
@@ -310,12 +419,12 @@ export default function ReviewTodayScreen() {
         {error ? (
           <FadeSlideIn distance={8}>
             <View style={styles.errorCard}>
-              <Ionicons name="cloud-offline-outline" size={19} color={colors.danger} />
+              <Ionicons name="alert-circle-outline" size={19} color={colors.danger} />
               <View style={styles.errorBody}>
-                <Text style={styles.errorTitle}>没能连上剪藏服务</Text>
+                <Text style={styles.errorTitle}>本机收藏暂时读不出来</Text>
                 <Text style={styles.errorText}>{error}</Text>
               </View>
-              <Pressable onPress={() => void load('initial')} style={styles.errorRetry} hitSlop={6}>
+              <Pressable onPress={() => void loadRef.current('initial')} style={styles.errorRetry} hitSlop={6}>
                 <Text style={styles.errorRetryText}>重试</Text>
               </Pressable>
             </View>
@@ -336,11 +445,11 @@ export default function ReviewTodayScreen() {
                   ? '这一批剪藏已经安放妥当，明天清晨再为你挑出新的一批。'
                   : totalActive > 0
                     ? `书房里还有 ${totalActive} 条剪藏，可以去收藏目录翻看。`
-                    : '可以去收藏目录收入几条，或者等下一次提醒。'}
+                    : '从分享菜单或右下角 + 收进几条，本机就能开始回顾。'}
               </Text>
               <View style={styles.doneActions}>
                 <SpringPressable
-                  onPress={() => void load('initial')}
+                  onPress={refreshDeck}
                   scaleTo={0.95}
                   contentStyle={styles.donePrimary}
                 >
@@ -408,7 +517,7 @@ export default function ReviewTodayScreen() {
             {acting ? (
               <View style={styles.syncingRow}>
                 <ActivityIndicator size="small" color={colors.muted} />
-                <Text style={styles.syncingText}>正在同步…</Text>
+                <Text style={styles.syncingText}>正在归档…</Text>
               </View>
             ) : (
               <Text style={styles.remainingHint}>

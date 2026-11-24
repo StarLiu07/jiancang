@@ -15,15 +15,19 @@ import {
   View,
 } from 'react-native';
 
-import { api, mediaUrl, pickErrorMessage } from '../../src/api/client';
+import { mediaUrl, pickErrorMessage } from '../../src/api/client';
 import { StatusPill } from '../../src/components/ClipCard';
 import { MarkdownText } from '../../src/components/MarkdownText';
 import { FadeSlideIn, SkeletonDetail, SpringPressable } from '../../src/components/Motion';
 import { useToast } from '../../src/components/Toast';
+import { localRepo, subscribeLocalChanges } from '../../src/local/repository';
 import { useSettings } from '../../src/store/settings';
 import { colors, elevation, fonts, platformMeta, radius, spacing } from '../../src/theme';
 import type { ClipDetail, ClipUpdateInput } from '../../src/types';
 import { formatDateTime, formatTags, parseTags } from '../../src/utils/format';
+
+/** Debounce for background ingestion turning this clip into ready/partial/failed. */
+const SILENT_RELOAD_DEBOUNCE_MS = 250;
 
 interface FormState {
   title: string;
@@ -65,7 +69,7 @@ export default function ClipDetailScreen() {
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const clipId = Array.isArray(params.id) ? params.id[0] : params.id;
   const router = useRouter();
-  const { config } = useSettings();
+  const { config, localAiConfig } = useSettings();
   const { show } = useToast();
 
   const [clip, setClip] = useState<ClipDetail | null>(null);
@@ -84,31 +88,65 @@ export default function ClipDetailScreen() {
   const loadedRef = useRef(false);
 
   const load = useCallback(
-    async (mode: 'initial' | 'refresh' = 'initial') => {
+    async (mode: 'initial' | 'refresh' | 'silent' = 'initial') => {
       if (!clipId) return;
       if (mode === 'refresh') setRefreshing(true);
-      else setLoading(true);
-      setError(null);
+      else if (mode === 'initial') setLoading(true);
+      if (mode !== 'silent') setError(null);
       try {
-        const detail = await api.getClip({ baseUrl: config.baseUrl, token: config.token }, clipId);
+        const detail = await localRepo.getClip(clipId);
         setClip(detail);
+        // Never overwrite a draft the user is actively editing.
         if (!dirtyRef.current || !loadedRef.current) {
           setForm(toForm(detail));
         }
         loadedRef.current = true;
       } catch (err) {
-        setError(pickErrorMessage(err));
+        // Silent reloads stay quiet: the clip is already on screen.
+        if (mode !== 'silent') setError(pickErrorMessage(err));
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (mode !== 'silent') {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
-    [clipId, config.baseUrl, config.token],
+    [clipId],
   );
 
   useEffect(() => {
     void load('initial');
   }, [load]);
+
+  const clipRef = useRef<ClipDetail | null>(clip);
+  clipRef.current = clip;
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  // Re-read the detail while extraction / AI enrichment is still running, so
+  // the body and digest appear without a manual pull-to-refresh.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeLocalChanges(() => {
+      const current = clipRef.current;
+      if (!current) return;
+      const unfinished =
+        current.status === 'pending'
+        || current.status === 'processing'
+        || current.ai_status === 'pending';
+      if (!unfinished) return;
+
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        void loadRef.current('silent');
+      }, SILENT_RELOAD_DEBOUNCE_MS);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+  }, []);
 
   const nextTags = parseTags(form.tags);
   const dirty =
@@ -152,11 +190,7 @@ export default function ClipDetailScreen() {
 
     setSaving(true);
     try {
-      const updated = await api.updateClip(
-        { baseUrl: config.baseUrl, token: config.token },
-        clip.id,
-        patch,
-      );
+      const updated = await localRepo.updateClip(clip.id, patch);
       setClip(updated);
       setForm(toForm(updated));
       show('已保存', 'success');
@@ -171,10 +205,7 @@ export default function ClipDetailScreen() {
     if (!clip || retrying) return;
     setRetrying(true);
     try {
-      const updated = await api.retryClip(
-        { baseUrl: config.baseUrl, token: config.token },
-        clip.id,
-      );
+      const updated = await localRepo.retryClip(clip.id, localAiConfig);
       setClip(updated);
       setForm(toForm(updated));
       show('已重新提交抓取', 'success');
@@ -190,11 +221,7 @@ export default function ClipDetailScreen() {
     const nextState = clip.review_state === 'archived' ? 'active' : 'archived';
     setArchiveBusy(true);
     try {
-      await api.updateClip(
-        { baseUrl: config.baseUrl, token: config.token },
-        clip.id,
-        { review_state: nextState },
-      );
+      await localRepo.updateClip(clip.id, { review_state: nextState });
       show(nextState === 'archived' ? '已归档' : '已放回收藏目录', 'success');
       if (nextState === 'archived') router.back();
       else setClip({ ...clip, review_state: nextState });
@@ -207,15 +234,15 @@ export default function ClipDetailScreen() {
 
   const remove = () => {
     if (!clip || deleteBusy) return;
-    Alert.alert('删除这条剪藏？', '会从收藏库移除，可在后端恢复。', [
+    Alert.alert('删除这条剪藏？', '会从收藏库中移除，并同步删除记录。', [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
         style: 'destructive',
         onPress: () => {
           setDeleteBusy(true);
-          void api
-            .deleteClip({ baseUrl: config.baseUrl, token: config.token }, clip.id)
+          void localRepo
+            .deleteClip(clip.id)
             .then(() => {
               show('已删除', 'success');
               router.back();
@@ -611,7 +638,7 @@ export default function ClipDetailScreen() {
           </SpringPressable>
         </View>
 
-        {error && clip ? <Text style={styles.staleHint}>同步提示：{error}</Text> : null}
+        {error && clip ? <Text style={styles.staleHint}>刷新提示：{error}</Text> : null}
       </ScrollView>
     </>
   );
