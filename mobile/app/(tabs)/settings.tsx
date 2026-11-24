@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -18,9 +18,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api, pickErrorMessage } from '../../src/api/client';
 import { FadeSlideIn, SpringPressable } from '../../src/components/Motion';
 import { useToast } from '../../src/components/Toast';
-import { BASE_URL_PRESETS, type AppSettings } from '../../src/storage/settings';
+import {
+  BASE_URL_PRESETS,
+  DEFAULT_LLM_MODEL,
+  type AppSettings,
+} from '../../src/storage/settings';
 import { useSettings } from '../../src/store/settings';
+import { useSync } from '../../src/store/sync';
 import { useAppUpdate } from '../../src/store/update';
+import { formatSyncSummary, type SyncStatus } from '../../src/sync/engine';
 import { colors, elevation, fonts, radius, spacing } from '../../src/theme';
 import type { HealthResponse } from '../../src/types';
 import { formatClock, formatDateTime } from '../../src/utils/format';
@@ -34,14 +40,50 @@ import { isValidHttpUrl, normalizeBaseUrl } from '../../src/utils/url';
 
 const APP_ICON = require('../../assets/icon.png');
 
+const SYNC_STATUS_META: Record<SyncStatus, { label: string; color: string; soft: string }> = {
+  idle: { label: '空闲', color: colors.muted, soft: colors.surface },
+  syncing: { label: '同步中', color: colors.info, soft: colors.infoSoft },
+  success: { label: '已同步', color: colors.success, soft: colors.successSoft },
+  offline: { label: '离线已跳过', color: colors.warning, soft: colors.warningSoft },
+  error: { label: '异常', color: colors.danger, soft: colors.dangerSoft },
+};
+
+const SYNC_STATUS_ICON: Record<SyncStatus, keyof typeof Ionicons.glyphMap> = {
+  idle: 'cloud-outline',
+  syncing: 'sync-outline',
+  success: 'cloud-done-outline',
+  offline: 'cloud-offline-outline',
+  error: 'alert-circle-outline',
+};
+
+/**
+ * Public LLM gateways are usually HTTPS; unlike the LAN-only NUC presets we
+ * default a scheme-less value to https so `api.deepseek.com/v1` just works.
+ */
+function normalizeLlmUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return normalizeBaseUrl(trimmed);
+  return `https://${trimmed.replace(/\/+$/, '')}`;
+}
+
 export default function SettingsScreen() {
   const { settings, ready, update } = useSettings();
+  const sync = useSync();
   const { show } = useToast();
   const appUpdate = useAppUpdate();
 
   const [baseUrl, setBaseUrl] = useState(settings.baseUrl);
   const [token, setToken] = useState(settings.token);
   const [revealToken, setRevealToken] = useState(false);
+  const [syncEnabled, setSyncEnabled] = useState(settings.syncEnabled);
+  const [autoSync, setAutoSync] = useState(settings.autoSync);
+
+  const [llmBaseUrl, setLlmBaseUrl] = useState(settings.llmBaseUrl);
+  const [llmApiKey, setLlmApiKey] = useState(settings.llmApiKey);
+  const [llmModel, setLlmModel] = useState(settings.llmModel);
+  const [revealApiKey, setRevealApiKey] = useState(false);
+
   const [reminderEnabled, setReminderEnabled] = useState(settings.reminderEnabled);
   const [hour, setHour] = useState(settings.reminderHour);
   const [minute, setMinute] = useState(settings.reminderMinute);
@@ -50,34 +92,60 @@ export default function SettingsScreen() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [scheduled, setScheduled] = useState(false);
+
+  // Only pull a field back into local state when its persisted value actually
+  // changed (e.g. another screen saved, or our own partial save). This keeps
+  // unsaved edits on unrelated fields alive when "立即同步" persists the
+  // network fields only.
+  const appliedSettingsRef = useRef<AppSettings>(settings);
 
   useEffect(() => {
     if (!ready) return;
-    setBaseUrl(settings.baseUrl);
-    setToken(settings.token);
-    setReminderEnabled(settings.reminderEnabled);
-    setHour(settings.reminderHour);
-    setMinute(settings.reminderMinute);
-  }, [
-    ready,
-    settings.baseUrl,
-    settings.token,
-    settings.reminderEnabled,
-    settings.reminderHour,
-    settings.reminderMinute,
-  ]);
+    const prev = appliedSettingsRef.current;
+    appliedSettingsRef.current = settings;
+    if (settings.baseUrl !== prev.baseUrl) setBaseUrl(settings.baseUrl);
+    if (settings.token !== prev.token) setToken(settings.token);
+    if (settings.llmBaseUrl !== prev.llmBaseUrl) setLlmBaseUrl(settings.llmBaseUrl);
+    if (settings.llmApiKey !== prev.llmApiKey) setLlmApiKey(settings.llmApiKey);
+    if (settings.llmModel !== prev.llmModel) setLlmModel(settings.llmModel);
+    if (settings.syncEnabled !== prev.syncEnabled) setSyncEnabled(settings.syncEnabled);
+    if (settings.autoSync !== prev.autoSync) setAutoSync(settings.autoSync);
+    if (settings.reminderEnabled !== prev.reminderEnabled) {
+      setReminderEnabled(settings.reminderEnabled);
+    }
+    if (settings.reminderHour !== prev.reminderHour) setHour(settings.reminderHour);
+    if (settings.reminderMinute !== prev.reminderMinute) setMinute(settings.reminderMinute);
+  }, [ready, settings]);
+
+  const { refreshPendingCount } = sync;
 
   useFocusEffect(
     useCallback(() => {
       void hasScheduledDailyReminder().then(setScheduled);
-    }, []),
+      void refreshPendingCount();
+    }, [refreshPendingCount]),
   );
 
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const normalizedLlmBaseUrl = normalizeLlmUrl(llmBaseUrl);
+  const normalizedModel = llmModel.trim() || DEFAULT_LLM_MODEL;
+  const aiConfigured = Boolean(normalizedLlmBaseUrl && llmApiKey.trim());
+  const aiStatusLabel = aiConfigured
+    ? '已开启'
+    : normalizedLlmBaseUrl
+      ? '缺 API Key'
+      : '未配置';
+
   const dirty =
     normalizedBaseUrl !== settings.baseUrl ||
     token.trim() !== settings.token ||
+    syncEnabled !== settings.syncEnabled ||
+    autoSync !== settings.autoSync ||
+    normalizedLlmBaseUrl !== settings.llmBaseUrl ||
+    llmApiKey.trim() !== settings.llmApiKey ||
+    normalizedModel !== settings.llmModel ||
     reminderEnabled !== settings.reminderEnabled ||
     hour !== settings.reminderHour ||
     minute !== settings.reminderMinute;
@@ -92,7 +160,7 @@ export default function SettingsScreen() {
     const url = normalizeBaseUrl(baseUrl);
     if (!isValidHttpUrl(url)) {
       setHealth(null);
-      setTestError('后端地址格式不正确，示例：http://192.168.31.98:8420');
+      setTestError('NUC 地址格式不正确，示例：http://192.168.31.98:8420');
       return;
     }
     setTesting(true);
@@ -110,8 +178,15 @@ export default function SettingsScreen() {
 
   const save = async () => {
     const url = normalizeBaseUrl(baseUrl);
-    if (!isValidHttpUrl(url)) {
-      show('请填写有效的后端地址，如 http://192.168.31.98:8420', 'error');
+    // Pure-offline mode never dials the NUC, so a half-typed address must not
+    // block saving; it only gets validated once sync is switched on.
+    if (syncEnabled && url && !isValidHttpUrl(url)) {
+      show('NUC 地址格式不正确，示例：http://192.168.31.98:8420', 'error');
+      return;
+    }
+    const aiUrl = normalizeLlmUrl(llmBaseUrl);
+    if (aiUrl && !isValidHttpUrl(aiUrl)) {
+      show('AI 接口地址格式不正确，示例：https://api.deepseek.com/v1', 'error');
       return;
     }
 
@@ -131,6 +206,11 @@ export default function SettingsScreen() {
       const next: AppSettings = await update({
         baseUrl: url,
         token: token.trim(),
+        llmBaseUrl: aiUrl,
+        llmApiKey: llmApiKey.trim(),
+        llmModel: normalizedModel,
+        syncEnabled,
+        autoSync,
         reminderEnabled: enabled,
         reminderHour: hour,
         reminderMinute: minute,
@@ -138,17 +218,99 @@ export default function SettingsScreen() {
 
       setBaseUrl(next.baseUrl);
       setToken(next.token);
+      setLlmBaseUrl(next.llmBaseUrl);
+      setLlmApiKey(next.llmApiKey);
+      setLlmModel(next.llmModel);
+      setSyncEnabled(next.syncEnabled);
+      setAutoSync(next.autoSync);
       setReminderEnabled(next.reminderEnabled);
       setHour(next.reminderHour);
       setMinute(next.reminderMinute);
       setScheduled(next.reminderEnabled);
       setHealth(null);
       setTestError(null);
-      show('设置已保存', 'success');
+      show(
+        next.syncEnabled
+          ? next.baseUrl
+            ? '设置已保存'
+            : '设置已保存 · 还没填 NUC 地址，暂时纯本地使用'
+          : '设置已保存 · 纯本地模式',
+        'success',
+      );
     } catch (err) {
       show(pickErrorMessage(err), 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * Persists only the fields a manual sync needs, so unrelated unsaved edits
+   * (AI key, reminder time) are not silently committed by tapping sync.
+   */
+  const persistNetworkInputs = async (): Promise<boolean> => {
+    const url = normalizeBaseUrl(baseUrl);
+    if (!isValidHttpUrl(url)) {
+      show('请先填写有效的 NUC 地址，如 http://192.168.31.98:8420', 'error');
+      return false;
+    }
+    try {
+      const next = await update({
+        baseUrl: url,
+        token: token.trim(),
+        syncEnabled,
+        autoSync,
+      });
+      setBaseUrl(next.baseUrl);
+      setToken(next.token);
+      setSyncEnabled(next.syncEnabled);
+      setAutoSync(next.autoSync);
+      return true;
+    } catch (err) {
+      show(pickErrorMessage(err), 'error');
+      return false;
+    }
+  };
+
+  const runManualSync = async () => {
+    if (syncing) return;
+    if (!syncEnabled) {
+      show('先开启「启用 NUC 同步」，再立即同步', 'info');
+      return;
+    }
+    if (!isValidHttpUrl(normalizedBaseUrl)) {
+      show('请先填写有效的 NUC 地址，再立即同步', 'error');
+      return;
+    }
+
+    const needsPersist =
+      normalizedBaseUrl !== settings.baseUrl ||
+      token.trim() !== settings.token ||
+      syncEnabled !== settings.syncEnabled ||
+      autoSync !== settings.autoSync;
+
+    setSyncing(true);
+    try {
+      if (needsPersist) {
+        const saved = await persistNetworkInputs();
+        if (!saved) return;
+        // Let SyncProvider pick up the freshly saved config before running.
+        await new Promise<void>((resolve) => setTimeout(resolve, 120));
+      }
+
+      const result = await sync.syncNow({ silent: false });
+      if (!result) {
+        show('同步正在进行中，请稍候', 'info');
+        return;
+      }
+      show(
+        formatSyncSummary(result),
+        result.status === 'success' ? 'success' : result.status === 'error' ? 'error' : 'info',
+      );
+    } catch (err) {
+      show(pickErrorMessage(err, '同步失败，请稍后再试'), 'error');
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -165,13 +327,44 @@ export default function SettingsScreen() {
           : appUpdate.checkStatus === 'error'
             ? '上次检查失败，请检查网络或代理后重试'
             : '冷启动会静默检查 GitHub Release，也可手动查询';
-  // 未测试时保持中性墨色，避免未测试就亮绿点
-  const statusColor = health ? colors.success : testError ? colors.danger : colors.muted;
+
+  const syncMeta = SYNC_STATUS_META[sync.status];
+  const syncBusy = syncing || sync.status === 'syncing';
+  const statusColor = health
+    ? colors.success
+    : testError
+      ? colors.danger
+      : syncEnabled
+        ? syncMeta.color
+        : colors.muted;
   const statusSummary = health
     ? `${health.app || '家用 NUC'} 已连通${health.ai_enabled ? ' · AI 提炼开启' : ''}`
     : testError
       ? '连接未通过 · 请检查后端线路'
-      : `v${appVersion} · 家用 NUC 与 Tailscale 同步`;
+      : !syncEnabled
+        ? '纯本地模式 · 剪藏只留在这台手机'
+        : sync.status === 'syncing'
+          ? '正在与 NUC 同步…'
+          : sync.status === 'offline'
+            ? '离线已跳过同步 · 本地记录安全'
+            : sync.status === 'error'
+              ? '同步异常 · 本地记录未丢失'
+              : sync.status === 'success'
+                ? '已同步 · NUC 与手机保持一致'
+                : `v${appVersion} · 本地优先，可选云端同步`;
+
+  const effectiveStatusLabel = syncEnabled ? syncMeta.label : '已关闭';
+  const effectiveStatusColor = syncEnabled ? syncMeta.color : colors.muted;
+  const effectiveStatusSoft = syncEnabled ? syncMeta.soft : colors.surface;
+  const syncIcon = syncEnabled ? SYNC_STATUS_ICON[sync.status] : 'cloud-offline-outline';
+  const lastSyncLabel = sync.lastSyncAt ? formatDateTime(sync.lastSyncAt) : '还未同步过';
+  const syncSummaryLine = !syncEnabled
+    ? '同步已关闭，剪藏与复习记录只保存在本机。'
+    : sync.status === 'syncing'
+      ? '正在与 NUC 交换变更，请稍候…'
+      : sync.lastMessage
+        ? sync.lastMessage
+        : '还没有同步记录，点「立即同步」把本机剪藏送到 NUC。';
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -182,7 +375,7 @@ export default function SettingsScreen() {
       >
         <View style={styles.header}>
           <Text style={styles.title}>设置</Text>
-          <Text style={styles.subtitle}>连接家里的 NUC，或通过 Tailscale 随时同步</Text>
+          <Text style={styles.subtitle}>本地优先剪藏，按需接入公网 AI 与家里的 NUC</Text>
         </View>
 
         <View style={styles.identityCard}>
@@ -199,32 +392,212 @@ export default function SettingsScreen() {
         </View>
 
         <View style={styles.group}>
-          <Text style={styles.groupTitle}>后端线路</Text>
-          <View style={styles.presetRow}>
-            {BASE_URL_PRESETS.map((preset) => {
-              const selected = normalizedBaseUrl === preset.url;
-              return (
-                <SpringPressable
-                  key={preset.url}
-                  onPress={() => applyPreset(preset.url)}
-                  scaleTo={0.97}
-                  style={styles.presetFlex}
-                  contentStyle={[styles.presetButton, selected && styles.presetButtonSelected]}
-                >
-                  <Text style={[styles.presetLabel, selected && styles.presetLabelSelected]}>
-                    {preset.label}
-                  </Text>
-                  <Text style={styles.presetHint} numberOfLines={1}>
-                    {preset.url.replace(/^https?:\/\//, '')}
-                  </Text>
-                </SpringPressable>
-              );
-            })}
+          <View style={styles.groupHeading}>
+            <Text style={styles.groupTitle}>本机 AI 提炼 · 可选</Text>
+            <View
+              style={[
+                styles.miniBadge,
+                aiConfigured ? styles.miniBadgeOn : styles.miniBadgeOff,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.miniBadgeText,
+                  { color: aiConfigured ? colors.accent : colors.muted },
+                ]}
+              >
+                {aiStatusLabel}
+              </Text>
+            </View>
           </View>
 
           <View style={styles.section}>
+            <View style={styles.hintCard}>
+              <Ionicons
+                name="sparkles-outline"
+                size={15}
+                color={colors.accent}
+                style={styles.hintIcon}
+              />
+              <Text style={styles.hintText}>
+                填写后，日常剪藏与离线抓取会直接调用这个 OpenAI 兼容接口，生成摘要与标签；
+                留空则本机跳过 AI，同步到 NUC 后由 NUC 自动补跑并回流。
+              </Text>
+            </View>
+
             <View style={styles.field}>
-              <Text style={styles.label}>服务地址</Text>
+              <Text style={styles.label}>API Base URL</Text>
+              <TextInput
+                value={llmBaseUrl}
+                onChangeText={setLlmBaseUrl}
+                placeholder="https://api.deepseek.com/v1"
+                placeholderTextColor={colors.faint}
+                style={styles.input}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                inputMode="url"
+              />
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.label}>API Key</Text>
+              <View style={styles.tokenRow}>
+                <TextInput
+                  value={llmApiKey}
+                  onChangeText={setLlmApiKey}
+                  placeholder="sk-…（只保存在本机）"
+                  placeholderTextColor={colors.faint}
+                  style={[styles.input, styles.tokenInput]}
+                  secureTextEntry={!revealApiKey}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Pressable
+                  onPress={() => setRevealApiKey((value) => !value)}
+                  hitSlop={8}
+                  style={styles.eyeButton}
+                >
+                  <Ionicons
+                    name={revealApiKey ? 'eye-off-outline' : 'eye-outline'}
+                    size={18}
+                    color={colors.muted}
+                  />
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.label}>模型名</Text>
+              <TextInput
+                value={llmModel}
+                onChangeText={setLlmModel}
+                placeholder={DEFAULT_LLM_MODEL}
+                placeholderTextColor={colors.faint}
+                style={styles.input}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+
+            <Text style={styles.fieldHint}>
+              Base URL 与 API Key 都填写后才会在本机启用 AI；密钥仅保存在本机，不会随同步上传。
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.group}>
+          <View style={styles.groupHeading}>
+            <Text style={styles.groupTitle}>NUC 云端同步 · 可选</Text>
+            <Text style={styles.groupMeta}>{syncEnabled ? '双向同步' : '纯本地'}</Text>
+          </View>
+
+          <View style={styles.section}>
+            <View
+              style={[
+                styles.syncPanel,
+                {
+                  backgroundColor: effectiveStatusSoft,
+                  borderColor: `${effectiveStatusColor}33`,
+                },
+              ]}
+            >
+              <View style={styles.syncHeader}>
+                <View style={styles.syncIconWrap}>
+                  <Ionicons name={syncIcon} size={18} color={effectiveStatusColor} />
+                </View>
+                <View style={styles.syncHeaderText}>
+                  <Text style={styles.syncTitle}>
+                    NUC 同步 · {syncEnabled ? '已开启' : '未开启'}
+                  </Text>
+                  <Text style={styles.syncSubtitle} numberOfLines={2}>
+                    {syncSummaryLine}
+                  </Text>
+                </View>
+                <View
+                  style={[styles.statusChip, { borderColor: `${effectiveStatusColor}44` }]}
+                >
+                  <View
+                    style={[styles.statusDot, { backgroundColor: effectiveStatusColor }]}
+                  />
+                  <Text style={[styles.statusChipText, { color: effectiveStatusColor }]}>
+                    {effectiveStatusLabel}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.syncMetaList}>
+                <View style={styles.syncMetaRow}>
+                  <Text style={styles.syncMetaLabel}>待同步变更</Text>
+                  <Text style={styles.syncMetaValue}>{sync.pendingCount} 项</Text>
+                </View>
+                <View style={[styles.syncMetaRow, styles.syncMetaRowDivider]}>
+                  <Text style={styles.syncMetaLabel}>上次同步</Text>
+                  <Text style={styles.syncMetaValue}>{lastSyncLabel}</Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.switchRow}>
+              <View style={styles.switchText}>
+                <Text style={styles.switchLabel}>启用 NUC 同步</Text>
+                <Text style={styles.switchHint}>
+                  关闭后完全离线：剪藏只留本机，不访问任何服务器
+                </Text>
+              </View>
+              <Switch
+                value={syncEnabled}
+                onValueChange={setSyncEnabled}
+                trackColor={{ false: colors.surfaceAlt, true: colors.accent }}
+                thumbColor={colors.onAccent}
+              />
+            </View>
+
+            <View style={[styles.switchRow, !syncEnabled && styles.disabled]}>
+              <View style={styles.switchText}>
+                <Text style={styles.switchLabel}>打开 App 自动静默同步</Text>
+                <Text style={styles.switchHint}>回到前台时静默补传，失败不打扰</Text>
+              </View>
+              <Switch
+                value={autoSync}
+                onValueChange={setAutoSync}
+                disabled={!syncEnabled}
+                trackColor={{ false: colors.surfaceAlt, true: colors.accent }}
+                thumbColor={colors.onAccent}
+              />
+            </View>
+
+            <View style={styles.sectionDivider} />
+
+            <View style={styles.field}>
+              <Text style={styles.label}>快捷线路</Text>
+              <View style={styles.presetRow}>
+                {BASE_URL_PRESETS.map((preset) => {
+                  const selected = normalizedBaseUrl === preset.url;
+                  return (
+                    <SpringPressable
+                      key={preset.url}
+                      onPress={() => applyPreset(preset.url)}
+                      scaleTo={0.97}
+                      style={styles.presetFlex}
+                      contentStyle={[styles.presetButton, selected && styles.presetButtonSelected]}
+                    >
+                      <Text
+                        style={[styles.presetLabel, selected && styles.presetLabelSelected]}
+                      >
+                        {preset.label}
+                      </Text>
+                      <Text style={styles.presetHint} numberOfLines={1}>
+                        {preset.url.replace(/^https?:\/\//, '')}
+                      </Text>
+                    </SpringPressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.label}>NUC 服务地址</Text>
               <TextInput
                 value={baseUrl}
                 onChangeText={(value) => {
@@ -240,15 +613,18 @@ export default function SettingsScreen() {
                 keyboardType="url"
                 inputMode="url"
               />
+              <Text style={styles.fieldHint}>
+                保持空白也可以保存：此时只在本机剪藏，不连接 NUC。
+              </Text>
             </View>
 
             <View style={styles.field}>
-              <Text style={styles.label}>API Token（可选）</Text>
+              <Text style={styles.label}>访问令牌（可选）</Text>
               <View style={styles.tokenRow}>
                 <TextInput
                   value={token}
                   onChangeText={setToken}
-                  placeholder="后端开启鉴权时填写"
+                  placeholder="NUC 开启鉴权时填写"
                   placeholderTextColor={colors.faint}
                   style={[styles.input, styles.tokenInput]}
                   secureTextEntry={!revealToken}
@@ -260,7 +636,11 @@ export default function SettingsScreen() {
                   hitSlop={8}
                   style={styles.eyeButton}
                 >
-                  <Ionicons name={revealToken ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.muted} />
+                  <Ionicons
+                    name={revealToken ? 'eye-off-outline' : 'eye-outline'}
+                    size={18}
+                    color={colors.muted}
+                  />
                 </Pressable>
               </View>
             </View>
@@ -287,8 +667,12 @@ export default function SettingsScreen() {
                     <Text style={styles.resultTitle}>{health.app || '剪藏 API'} 已连通</Text>
                   </View>
                   <Text style={styles.resultLine}>状态：{health.status}</Text>
-                  <Text style={styles.resultLine}>AI 提炼：{health.ai_enabled ? '已启用' : '未启用'}</Text>
-                  <Text style={styles.resultLine}>接口鉴权：{health.auth_enabled ? '已开启' : '未开启'}</Text>
+                  <Text style={styles.resultLine}>
+                    AI 提炼：{health.ai_enabled ? '已启用' : '未启用'}
+                  </Text>
+                  <Text style={styles.resultLine}>
+                    接口鉴权：{health.auth_enabled ? '已开启' : '未开启'}
+                  </Text>
                 </View>
               </FadeSlideIn>
             ) : null}
@@ -304,6 +688,32 @@ export default function SettingsScreen() {
                 </View>
               </FadeSlideIn>
             ) : null}
+
+            <SpringPressable
+              onPress={() => void runManualSync()}
+              disabled={!syncEnabled || syncBusy || saving}
+              scaleTo={0.97}
+              contentStyle={[
+                styles.syncButton,
+                (!syncEnabled || syncBusy || saving) && styles.syncButtonDisabled,
+              ]}
+            >
+              {syncBusy ? (
+                <ActivityIndicator size="small" color={colors.bg} />
+              ) : (
+                <Ionicons name="sync-outline" size={17} color={colors.bg} />
+              )}
+              <Text style={styles.syncButtonText}>
+                {syncBusy ? '正在同步…' : '立即同步'}
+              </Text>
+            </SpringPressable>
+            <Text style={styles.syncButtonHint}>
+              {!syncEnabled
+                ? '开启同步后可用；纯离线时本地剪藏会在下次同步时补传。'
+                : normalizedBaseUrl
+                  ? '地址或令牌有改动时，会先保存当前输入再同步。'
+                  : '先填写 NUC 地址，再立即同步。'}
+            </Text>
           </View>
         </View>
 
@@ -452,9 +862,12 @@ export default function SettingsScreen() {
         <View style={styles.about}>
           <Text style={styles.aboutTitle}>剪藏 · v{appVersion}</Text>
           <Text style={styles.aboutText}>
-            从小红书、公众号、X 分享到「剪藏」即可静默入库；局域网与 Tailscale 直连 HTTP，无需 HTTPS。
+            剪藏默认把内容留在本机，离线也能复习；开启 NUC 同步后自动双向补全。局域网与
+            Tailscale 直连 HTTP，无需 HTTPS。
           </Text>
-          <Text style={styles.aboutMuted}>最近同步：{formatDateTime(new Date().toISOString())}</Text>
+          <Text style={styles.aboutMuted}>
+            最近同步：{sync.lastSyncAt ? formatDateTime(sync.lastSyncAt) : '还未同步过'}
+          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -532,11 +945,39 @@ const styles = StyleSheet.create({
   group: {
     gap: 10,
   },
+  groupHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+  },
   groupTitle: {
     color: colors.muted,
     fontSize: 12.5,
     fontWeight: '600',
     marginLeft: 2,
+  },
+  groupMeta: {
+    color: colors.faint,
+    fontSize: 11,
+  },
+  miniBadge: {
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  miniBadgeOn: {
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.accentBorder,
+  },
+  miniBadgeOff: {
+    backgroundColor: colors.surface,
+    borderColor: colors.borderSubtle,
+  },
+  miniBadgeText: {
+    fontSize: 10.5,
+    fontWeight: '600',
   },
   section: {
     backgroundColor: colors.sheet,
@@ -546,6 +987,10 @@ const styles = StyleSheet.create({
     padding: 15,
     gap: 14,
   },
+  sectionDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+  },
   field: {
     gap: 6,
   },
@@ -553,6 +998,12 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 12,
     fontWeight: '600',
+    marginLeft: 2,
+  },
+  fieldHint: {
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 16,
     marginLeft: 2,
   },
   input: {
@@ -580,6 +1031,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  hintCard: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    backgroundColor: colors.accentSoft,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.accentBorder,
+    padding: spacing.md,
+  },
+  hintIcon: {
+    marginTop: 1,
+  },
+  hintText: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: 11.5,
+    lineHeight: 17,
   },
   presetRow: {
     flexDirection: 'row',
@@ -615,6 +1084,88 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 10.5,
   },
+  syncPanel: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  syncHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  syncIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    backgroundColor: colors.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  syncHeaderText: {
+    flex: 1,
+    gap: 3,
+  },
+  syncTitle: {
+    color: colors.text,
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  syncSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 11.5,
+    lineHeight: 16,
+  },
+  statusChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: colors.sheet,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusChipText: {
+    fontSize: 10.5,
+    fontWeight: '600',
+  },
+  syncMetaList: {
+    backgroundColor: colors.sheet,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: spacing.md,
+  },
+  syncMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingVertical: 9,
+  },
+  syncMetaRowDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderSubtle,
+  },
+  syncMetaLabel: {
+    color: colors.muted,
+    fontSize: 11.5,
+  },
+  syncMetaValue: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
   testButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -630,6 +1181,33 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 13,
     fontWeight: '600',
+  },
+  syncButton: {
+    height: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    backgroundColor: colors.text,
+    borderRadius: radius.md,
+    ...elevation.card,
+  },
+  syncButtonDisabled: {
+    opacity: 0.34,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  syncButtonText: {
+    color: colors.bg,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  syncButtonHint: {
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: -6,
+    marginLeft: 2,
   },
   resultCard: {
     backgroundColor: colors.successSoft,
