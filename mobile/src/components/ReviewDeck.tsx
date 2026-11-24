@@ -41,7 +41,7 @@ interface ReviewDeckProps {
 
 /**
  * Interactive stacked card deck for Today Review:
- * - Drag right to Archive ("已消化"), drag left to Snooze ("以后再看")
+ * - Drag right to Archive ("已消化"), drag left to Snooze ("留待下次")
  * - Behind-card deck layers rise & scale smoothly as you drag
  * - Also exposes imperative `triggerAction` so bottom buttons drive the same physics
  */
@@ -286,6 +286,7 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
           clip={clip}
           variant="feature"
           queueLabel={queueLabel}
+          keyPoints={clip.key_points}
           onPress={onOpenDetail}
         />
 
@@ -298,11 +299,11 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
             { opacity: archiveStampOpacity, transform: [{ scale: archiveStampScale }] },
           ]}
         >
-          <Ionicons name="checkmark-circle" size={16} color={colors.onAccent} />
+          <Ionicons name="checkmark" size={16} color={colors.onAccent} />
           <Text style={styles.stampArchiveText}>已消化</Text>
         </Animated.View>
 
-        {/* Swipe left intent stamp: 以后再看 */}
+        {/* Swipe left intent stamp: 留待下次 */}
         <Animated.View
           pointerEvents="none"
           style={[
@@ -311,8 +312,8 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
             { opacity: snoozeStampOpacity, transform: [{ scale: snoozeStampScale }] },
           ]}
         >
-          <Ionicons name="time-outline" size={15} color={colors.text} />
-          <Text style={styles.stampSnoozeText}>以后再看</Text>
+          <Ionicons name="time-outline" size={15} color={colors.bg} />
+          <Text style={styles.stampSnoozeText}>留待下次</Text>
         </Animated.View>
       </Animated.View>
     </View>
@@ -322,6 +323,8 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
 const styles = StyleSheet.create({
   deckWrap: {
     position: 'relative',
+    // ClipCard 内部已含 paddingTop: 6（纸夹预留位），此处不再叠加
+    paddingTop: 0,
     paddingBottom: 14,
   },
   deckGhostNear: {
@@ -330,10 +333,8 @@ const styles = StyleSheet.create({
     right: 12,
     bottom: 6,
     height: 40,
-    borderRadius: radius.xl,
+    borderRadius: radius.lg,
     backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
   },
   deckGhostFar: {
     position: 'absolute',
@@ -341,17 +342,15 @@ const styles = StyleSheet.create({
     right: 26,
     bottom: 0,
     height: 32,
-    borderRadius: radius.xl,
-    backgroundColor: colors.bgElevated,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surfaceAlt,
   },
   cardWrap: {
     position: 'relative',
   },
   stamp: {
     position: 'absolute',
-    top: 56,
+    top: 44,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -362,23 +361,19 @@ const styles = StyleSheet.create({
   stampArchive: {
     left: spacing.md,
     backgroundColor: colors.accent,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
   },
   stampArchiveText: {
     color: colors.onAccent,
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '700',
   },
   stampSnooze: {
     right: spacing.md,
-    backgroundColor: 'rgba(17, 21, 29, 0.9)',
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
+    backgroundColor: colors.text,
   },
   stampSnoozeText: {
-    color: colors.text,
+    color: colors.bg,
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 });

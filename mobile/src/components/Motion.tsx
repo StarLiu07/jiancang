@@ -10,7 +10,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 
-import { colors, radius, spacing } from '../theme';
+import { colors, elevation, radius, spacing } from '../theme';
 
 export const MOTION = {
   springSnappy: { tension: 260, friction: 22, useNativeDriver: true },
@@ -131,7 +131,7 @@ export function FadeSlideIn({
   );
 }
 
-/** Shared breathing pulse value for obsidian-glass skeleton loaders. */
+/** Shared warm-paper breathing shimmer value for skeleton loaders. */
 function usePulse() {
   const pulse = useRef(new Animated.Value(0.45)).current;
 
@@ -139,14 +139,14 @@ function usePulse() {
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, {
-          toValue: 0.9,
-          duration: 850,
+          toValue: 0.92,
+          duration: 880,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
         Animated.timing(pulse, {
           toValue: 0.42,
-          duration: 850,
+          duration: 880,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
@@ -179,7 +179,7 @@ function SkeletonBone({
           width,
           height,
           borderRadius,
-          backgroundColor: colors.glassStrong,
+          backgroundColor: colors.surfaceAlt,
           opacity,
         },
         style,
@@ -193,24 +193,25 @@ export function SkeletonHeroCard() {
   return (
     <View style={styles.heroWrap}>
       <View style={styles.heroCard}>
-        <Animated.View style={[styles.heroCover, { opacity: pulse }]} />
+        <View style={styles.heroCoverPad}>
+          <Animated.View style={[styles.heroCover, { opacity: pulse }]} />
+        </View>
         <View style={styles.heroBody}>
+          <SkeletonBone width="40%" height={12} opacity={pulse} />
           <SkeletonBone width="92%" height={20} opacity={pulse} />
           <SkeletonBone width="68%" height={20} opacity={pulse} />
-          <SkeletonBone width="34%" height={12} opacity={pulse} style={{ marginTop: 2 }} />
           <SkeletonBone width="100%" height={14} opacity={pulse} style={{ marginTop: 6 }} />
           <SkeletonBone width="86%" height={14} opacity={pulse} />
           <View style={styles.tagRow}>
-            <SkeletonBone width={56} height={22} borderRadius={radius.pill} opacity={pulse} />
-            <SkeletonBone width={68} height={22} borderRadius={radius.pill} opacity={pulse} />
-            <SkeletonBone width={48} height={22} borderRadius={radius.pill} opacity={pulse} />
+            <SkeletonBone width={48} height={14} borderRadius={4} opacity={pulse} />
+            <SkeletonBone width={56} height={14} borderRadius={4} opacity={pulse} />
           </View>
         </View>
       </View>
       <View style={styles.actionSkeletonRow}>
-        <SkeletonBone width="32%" height={52} borderRadius={radius.lg} opacity={pulse} />
-        <SkeletonBone width="46%" height={52} borderRadius={radius.lg} opacity={pulse} />
-        <SkeletonBone width={52} height={52} borderRadius={radius.lg} opacity={pulse} />
+        <SkeletonBone width="34%" height={44} borderRadius={radius.md} opacity={pulse} />
+        <SkeletonBone width="46%" height={44} borderRadius={radius.md} opacity={pulse} />
+        <SkeletonBone width={44} height={44} borderRadius={radius.md} opacity={pulse} />
       </View>
     </View>
   );
@@ -221,17 +222,17 @@ export function SkeletonList({ count = 4 }: { count?: number }) {
   return (
     <View style={styles.listWrap}>
       {Array.from({ length: count }).map((_, idx) => (
-        <View key={idx} style={styles.listCard}>
-          <SkeletonBone width={82} height={82} borderRadius={radius.md} opacity={pulse} />
+        <View
+          key={idx}
+          style={[styles.listRow, idx < count - 1 && styles.listRowBorder]}
+        >
           <View style={styles.listBody}>
-            <View style={styles.listMeta}>
-              <SkeletonBone width={52} height={18} borderRadius={radius.pill} opacity={pulse} />
-              <SkeletonBone width={42} height={12} opacity={pulse} />
-            </View>
+            <SkeletonBone width={96} height={12} opacity={pulse} />
             <SkeletonBone width="94%" height={16} opacity={pulse} />
             <SkeletonBone width="72%" height={14} opacity={pulse} />
-            <SkeletonBone width="48%" height={12} opacity={pulse} />
+            <SkeletonBone width="54%" height={12} opacity={pulse} />
           </View>
+          <SkeletonBone width={68} height={68} borderRadius={radius.sm} opacity={pulse} style={{ marginTop: 4 }} />
         </View>
       ))}
     </View>
@@ -242,16 +243,14 @@ export function SkeletonDetail() {
   const pulse = usePulse();
   return (
     <View style={styles.detailWrap}>
-      <SkeletonBone width={76} height={24} borderRadius={radius.pill} opacity={pulse} />
+      <SkeletonBone width={140} height={13} opacity={pulse} />
       <SkeletonBone width="95%" height={24} opacity={pulse} />
       <SkeletonBone width="70%" height={24} opacity={pulse} />
-      <SkeletonBone width="30%" height={13} opacity={pulse} />
-      <SkeletonBone width="100%" height={44} borderRadius={radius.md} opacity={pulse} />
-      <View style={styles.detailAiBox}>
-        <SkeletonBone width={80} height={14} opacity={pulse} />
-        <SkeletonBone width="100%" height={16} opacity={pulse} />
-        <SkeletonBone width="90%" height={16} opacity={pulse} />
-        <SkeletonBone width="78%" height={14} opacity={pulse} style={{ marginTop: 6 }} />
+      <View style={styles.detailDigestBox}>
+        <SkeletonBone width={64} height={12} opacity={pulse} />
+        <SkeletonBone width="100%" height={15} opacity={pulse} />
+        <SkeletonBone width="88%" height={15} opacity={pulse} />
+        <SkeletonBone width="76%" height={13} opacity={pulse} style={{ marginTop: 6 }} />
       </View>
       <SkeletonBone width="100%" height={15} opacity={pulse} />
       <SkeletonBone width="96%" height={15} opacity={pulse} />
@@ -263,26 +262,33 @@ export function SkeletonDetail() {
 const styles = StyleSheet.create({
   heroWrap: {
     gap: spacing.lg,
+    marginTop: 6,
   },
   heroCard: {
-    backgroundColor: colors.surfaceElevated,
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
+    backgroundColor: colors.sheet,
+    borderRadius: radius.lg,
     overflow: 'hidden',
+    ...elevation.card,
+  },
+  heroCoverPad: {
+    paddingHorizontal: 14,
+    paddingTop: 18,
   },
   heroCover: {
     width: '100%',
-    aspectRatio: 16 / 9.2,
-    backgroundColor: colors.glass,
+    aspectRatio: 4 / 2.65,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
   },
   heroBody: {
-    padding: spacing.xl,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 18,
     gap: 10,
   },
   tagRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
     marginTop: 6,
   },
   actionSkeletonRow: {
@@ -291,41 +297,34 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   listWrap: {
-    gap: 10,
+    paddingTop: 4,
   },
-  listCard: {
+  listRow: {
     flexDirection: 'row',
     gap: 14,
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    padding: 14,
+    paddingVertical: 15,
+    alignItems: 'flex-start',
+  },
+  listRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSubtle,
   },
   listBody: {
     flex: 1,
     gap: 8,
-    justifyContent: 'center',
-  },
-  listMeta: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
   },
   detailWrap: {
     flex: 1,
-    backgroundColor: colors.bg,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
+    backgroundColor: colors.sheet,
+    paddingHorizontal: 22,
+    paddingTop: 20,
     gap: 14,
   },
-  detailAiBox: {
-    backgroundColor: colors.surfaceElevated,
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    padding: spacing.xl,
+  detailDigestBox: {
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    padding: 16,
     gap: 10,
-    marginVertical: 6,
+    marginVertical: 4,
   },
 });

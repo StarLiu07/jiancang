@@ -15,7 +15,7 @@ import {
   View,
 } from 'react-native';
 
-import { colors, elevation, radius, spacing } from '../theme';
+import { colors, elevation, fonts, radius, spacing } from '../theme';
 import { MOTION, SpringPressable } from './Motion';
 
 export interface QuickAddPayload {
@@ -127,8 +127,8 @@ export function QuickAddModal({ visible, busy = false, error = null, onClose, on
           <View style={styles.handle} />
           <View style={styles.header}>
             <View style={styles.headerText}>
-              <Text style={styles.title}>快速剪藏</Text>
-              <Text style={styles.subtitle}>粘贴链接或小红书口令，剩下的交给后端</Text>
+              <Text style={styles.title}>收入一条新剪藏</Text>
+              <Text style={styles.subtitle}>粘贴链接或小红书分享口令，剩下的交给后台</Text>
             </View>
             <SpringPressable onPress={onClose} hitSlop={10} scaleTo={0.9} contentStyle={styles.closeButton}>
               <Ionicons name="close" size={18} color={colors.muted} />
@@ -144,7 +144,7 @@ export function QuickAddModal({ visible, busy = false, error = null, onClose, on
               <TextInput
                 value={input}
                 onChangeText={setInput}
-                placeholder="https://xhslink.com/… 或一段分享文案"
+                placeholder="粘贴链接或小红书分享口令…"
                 placeholderTextColor={colors.faint}
                 style={styles.input}
                 multiline
@@ -213,10 +213,7 @@ export function QuickAddModal({ visible, busy = false, error = null, onClose, on
               {busy ? (
                 <ActivityIndicator size="small" color={colors.onAccent} />
               ) : (
-                <>
-                  <Ionicons name="add-circle" size={18} color={colors.onAccent} />
-                  <Text style={styles.submitText}>提交剪藏</Text>
-                </>
+                <Text style={styles.submitText}>收入书房</Text>
               )}
             </SpringPressable>
           </ScrollView>
@@ -236,13 +233,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.overlay,
   },
   sheet: {
-    backgroundColor: colors.surfaceElevated,
-    borderTopLeftRadius: radius.xxl,
-    borderTopRightRadius: radius.xxl,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    borderColor: colors.border,
-    borderTopColor: colors.rimTop,
+    backgroundColor: colors.sheet,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xxl,
@@ -251,7 +244,7 @@ const styles = StyleSheet.create({
   },
   handle: {
     alignSelf: 'center',
-    width: 40,
+    width: 36,
     height: 4,
     borderRadius: 2,
     backgroundColor: colors.borderStrong,
@@ -264,13 +257,13 @@ const styles = StyleSheet.create({
   },
   headerText: {
     flex: 1,
-    gap: 4,
+    gap: 3,
   },
   title: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.2,
+    fontSize: 18,
+    fontWeight: '700',
   },
   subtitle: {
     color: colors.muted,
@@ -280,7 +273,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: colors.glass,
+    backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -298,12 +291,12 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   input: {
-    minHeight: 100,
+    minHeight: 92,
     backgroundColor: colors.bg,
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    padding: 14,
+    borderColor: colors.borderStrong,
+    padding: 12,
     paddingBottom: 38,
     color: colors.text,
     fontSize: 14,
@@ -321,15 +314,15 @@ const styles = StyleSheet.create({
     gap: 4,
     backgroundColor: colors.accentSoft,
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.accentBorder,
-    paddingHorizontal: 11,
+    paddingHorizontal: 10,
     paddingVertical: 5,
   },
   pasteText: {
     color: colors.accent,
     fontSize: 11.5,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   label: {
     color: colors.muted,
@@ -341,20 +334,20 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     color: colors.text,
     fontSize: 14,
   },
   submitButton: {
+    height: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
     backgroundColor: colors.accent,
-    borderRadius: radius.lg,
-    paddingVertical: 15,
+    borderRadius: radius.md,
     marginTop: spacing.sm,
     ...elevation.accent,
   },
@@ -365,7 +358,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.dangerSoft,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: `${colors.danger}40`,
+    borderColor: `${colors.danger}33`,
     padding: 10,
   },
   formErrorText: {
@@ -375,13 +368,13 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
   submitDisabled: {
-    opacity: 0.36,
+    opacity: 0.38,
     shadowOpacity: 0,
     elevation: 0,
   },
   submitText: {
     color: colors.onAccent,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

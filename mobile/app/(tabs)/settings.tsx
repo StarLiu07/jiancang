@@ -4,6 +4,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,7 +20,7 @@ import { FadeSlideIn, SpringPressable } from '../../src/components/Motion';
 import { useToast } from '../../src/components/Toast';
 import { BASE_URL_PRESETS, type AppSettings } from '../../src/storage/settings';
 import { useSettings } from '../../src/store/settings';
-import { colors, elevation, radius, spacing } from '../../src/theme';
+import { colors, elevation, fonts, radius, spacing } from '../../src/theme';
 import type { HealthResponse } from '../../src/types';
 import { formatClock, formatDateTime } from '../../src/utils/format';
 import {
@@ -28,6 +29,8 @@ import {
   scheduleDailyReviewReminder,
 } from '../../src/utils/notifications';
 import { isValidHttpUrl, normalizeBaseUrl } from '../../src/utils/url';
+
+const APP_ICON = require('../../assets/icon.png');
 
 export default function SettingsScreen() {
   const { settings, ready, update } = useSettings();
@@ -146,7 +149,14 @@ export default function SettingsScreen() {
     }
   };
 
-  const appVersion = Constants.expoConfig?.version ?? '0.1.0';
+  const appVersion = Constants.expoConfig?.version ?? '0.3.0';
+  // 未测试时保持中性墨色，避免未测试就亮绿点
+  const statusColor = health ? colors.success : testError ? colors.danger : colors.muted;
+  const statusSummary = health
+    ? `${health.app || '家用 NUC'} 已连通${health.ai_enabled ? ' · AI 提炼开启' : ''}`
+    : testError
+      ? '连接未通过 · 请检查后端线路'
+      : `v${appVersion} · 家用 NUC 与 Tailscale 同步`;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -157,11 +167,46 @@ export default function SettingsScreen() {
       >
         <View style={styles.header}>
           <Text style={styles.title}>设置</Text>
-          <Text style={styles.subtitle}>连接家里的 NUC，或随时通过 Tailscale 回顾</Text>
+          <Text style={styles.subtitle}>连接家里的 NUC，或通过 Tailscale 随时同步</Text>
+        </View>
+
+        <View style={styles.identityCard}>
+          <Image source={APP_ICON} style={styles.identityIcon} />
+          <View style={styles.identityText}>
+            <Text style={styles.identityTitle}>剪藏 · 清晨折页</Text>
+            <View style={styles.identityStatusRow}>
+              <View style={[styles.identityDot, { backgroundColor: statusColor }]} />
+              <Text style={[styles.identityStatus, { color: statusColor }]} numberOfLines={1}>
+                {statusSummary}
+              </Text>
+            </View>
+          </View>
         </View>
 
         <View style={styles.group}>
-          <Text style={styles.groupTitle}>后端服务</Text>
+          <Text style={styles.groupTitle}>后端线路</Text>
+          <View style={styles.presetRow}>
+            {BASE_URL_PRESETS.map((preset) => {
+              const selected = normalizedBaseUrl === preset.url;
+              return (
+                <SpringPressable
+                  key={preset.url}
+                  onPress={() => applyPreset(preset.url)}
+                  scaleTo={0.97}
+                  style={styles.presetFlex}
+                  contentStyle={[styles.presetButton, selected && styles.presetButtonSelected]}
+                >
+                  <Text style={[styles.presetLabel, selected && styles.presetLabelSelected]}>
+                    {preset.label}
+                  </Text>
+                  <Text style={styles.presetHint} numberOfLines={1}>
+                    {preset.url.replace(/^https?:\/\//, '')}
+                  </Text>
+                </SpringPressable>
+              );
+            })}
+          </View>
+
           <View style={styles.section}>
             <View style={styles.field}>
               <Text style={styles.label}>服务地址</Text>
@@ -180,26 +225,6 @@ export default function SettingsScreen() {
                 keyboardType="url"
                 inputMode="url"
               />
-            </View>
-
-            <View style={styles.presetRow}>
-              {BASE_URL_PRESETS.map((preset) => {
-                const selected = normalizedBaseUrl === preset.url;
-                return (
-                  <SpringPressable
-                    key={preset.url}
-                    onPress={() => applyPreset(preset.url)}
-                    scaleTo={0.96}
-                    style={styles.presetFlex}
-                    contentStyle={[styles.presetButton, selected && styles.presetButtonSelected]}
-                  >
-                    <Text style={[styles.presetLabel, selected && styles.presetLabelSelected]}>{preset.label}</Text>
-                    <Text style={styles.presetHint} numberOfLines={1}>
-                      {preset.url}
-                    </Text>
-                  </SpringPressable>
-                );
-              })}
             </View>
 
             <View style={styles.field}>
@@ -272,18 +297,18 @@ export default function SettingsScreen() {
           <View style={styles.section}>
             <View style={styles.switchRow}>
               <View style={styles.switchText}>
-                <Text style={styles.switchLabel}>每天提醒我回顾</Text>
+                <Text style={styles.switchLabel}>每日提醒翻阅</Text>
                 <Text style={styles.switchHint}>
                   {reminderEnabled
-                    ? `每天 ${formatClock(hour, minute)} 推送一条本地提醒`
+                    ? `每天 ${formatClock(hour, minute)} 发送一条本地通知`
                     : '开启后会在设定时间收到本地通知'}
                 </Text>
               </View>
               <Switch
                 value={reminderEnabled}
                 onValueChange={setReminderEnabled}
-                trackColor={{ false: colors.surfaceRaised, true: colors.accentBorder }}
-                thumbColor={reminderEnabled ? colors.accent : '#C5CCD9'}
+                trackColor={{ false: colors.surfaceAlt, true: colors.accent }}
+                thumbColor={colors.onAccent}
               />
             </View>
 
@@ -335,7 +360,7 @@ export default function SettingsScreen() {
               </View>
 
               <View style={styles.timeHint}>
-                <Text style={styles.timeHintPrimary}>小时 / 分钟</Text>
+                <Text style={styles.timeHintPrimary}>提醒时段</Text>
                 <Text style={styles.timeHintText}>
                   {scheduled && reminderEnabled ? '提醒已注册到系统' : '保存后生效'}
                 </Text>
@@ -354,7 +379,7 @@ export default function SettingsScreen() {
             <ActivityIndicator size="small" color={colors.onAccent} />
           ) : (
             <>
-              <Ionicons name="save-outline" size={17} color={colors.onAccent} />
+              <Ionicons name="checkmark" size={17} color={colors.onAccent} />
               <Text style={styles.saveText}>{dirty ? '保存设置' : '设置已是最新'}</Text>
             </>
           )}
@@ -378,40 +403,83 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   content: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
+    paddingHorizontal: 18,
+    paddingTop: 14,
     paddingBottom: 40,
-    gap: 22,
+    gap: 18,
   },
   header: {
-    gap: 4,
+    gap: 3,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSubtle,
   },
   title: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.3,
+    fontSize: 24,
+    fontWeight: '700',
   },
   subtitle: {
     color: colors.muted,
     fontSize: 12.5,
   },
+
+  identityCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: colors.sheet,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
+  identityIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 11,
+  },
+  identityText: {
+    flex: 1,
+    gap: 3,
+  },
+  identityTitle: {
+    fontFamily: fonts.serif,
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  identityStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  identityDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  identityStatus: {
+    fontSize: 12,
+    flexShrink: 1,
+  },
+
   group: {
-    gap: 8,
+    gap: 10,
   },
   groupTitle: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-    marginLeft: 4,
+    fontSize: 12.5,
+    fontWeight: '600',
+    marginLeft: 2,
   },
   section: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.xl,
+    backgroundColor: colors.sheet,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.borderSubtle,
-    padding: spacing.lg,
+    padding: 15,
     gap: 14,
   },
   field: {
@@ -427,9 +495,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     color: colors.text,
     fontSize: 14,
   },
@@ -445,39 +513,42 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: radius.md,
-    backgroundColor: colors.glass,
+    backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
   presetRow: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    gap: 8,
   },
   presetFlex: {
     flex: 1,
   },
   presetButton: {
-    backgroundColor: colors.bg,
-    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    padding: 12,
-    gap: 4,
+    borderColor: 'transparent',
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    gap: 3,
   },
   presetButtonSelected: {
-    borderColor: colors.accentBorder,
-    backgroundColor: colors.accentSoft,
+    backgroundColor: colors.sheet,
+    borderWidth: 1.5,
+    borderColor: colors.accent,
   },
   presetLabel: {
-    color: colors.textSecondary,
-    fontSize: 12.5,
-    fontWeight: '700',
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
   },
   presetLabelSelected: {
     color: colors.accent,
   },
   presetHint: {
-    color: colors.faint,
+    fontFamily: fonts.mono,
+    color: colors.muted,
     fontSize: 10.5,
   },
   testButton: {
@@ -485,28 +556,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 7,
-    backgroundColor: colors.surfaceElevated,
+    backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
-    paddingVertical: 12,
+    paddingVertical: 11,
   },
   testButtonText: {
     color: colors.text,
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   resultCard: {
     backgroundColor: colors.successSoft,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: `${colors.success}3D`,
+    borderColor: `${colors.success}2E`,
     padding: spacing.md,
-    gap: 5,
+    gap: 4,
   },
   resultCardError: {
     backgroundColor: colors.dangerSoft,
-    borderColor: `${colors.danger}3D`,
+    borderColor: `${colors.danger}2E`,
   },
   resultHeader: {
     flexDirection: 'row',
@@ -514,15 +585,15 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   resultDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: colors.success,
   },
   resultTitle: {
     color: colors.text,
     fontSize: 12.5,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   resultLine: {
     color: colors.textSecondary,
@@ -536,7 +607,7 @@ const styles = StyleSheet.create({
   },
   switchText: {
     flex: 1,
-    gap: 3,
+    gap: 2,
   },
   switchLabel: {
     color: colors.text,
@@ -554,92 +625,92 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 14,
     backgroundColor: colors.bg,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    paddingVertical: 14,
+    borderRadius: 10,
+    paddingVertical: 12,
     paddingHorizontal: spacing.md,
   },
   disabled: {
-    opacity: 0.42,
+    opacity: 0.45,
   },
   timeColumn: {
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
   },
   stepButton: {
-    width: 34,
+    width: 32,
     height: 26,
-    borderRadius: radius.sm,
-    backgroundColor: colors.glass,
+    borderRadius: 7,
+    backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
   timeValue: {
+    fontFamily: fonts.mono,
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '800',
+    fontSize: 24,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
-    minWidth: 48,
+    minWidth: 44,
     textAlign: 'center',
   },
   timeColon: {
-    color: colors.faint,
-    fontSize: 22,
-    fontWeight: '700',
+    fontFamily: fonts.mono,
+    color: colors.muted,
+    fontSize: 20,
+    fontWeight: '600',
   },
   timeHint: {
-    gap: 3,
+    gap: 2,
     marginLeft: spacing.sm,
   },
   timeHintPrimary: {
-    color: colors.muted,
-    fontSize: 11.5,
+    color: colors.textSecondary,
+    fontSize: 12,
     fontWeight: '600',
   },
   timeHintText: {
-    color: colors.faint,
-    fontSize: 10.5,
+    color: colors.muted,
+    fontSize: 11,
   },
   saveButton: {
+    height: 46,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
+    gap: 6,
     backgroundColor: colors.accent,
-    borderRadius: radius.lg,
-    paddingVertical: 15,
+    borderRadius: 10,
     ...elevation.accent,
   },
   saveButtonDisabled: {
-    opacity: 0.34,
+    opacity: 0.36,
     shadowOpacity: 0,
     elevation: 0,
   },
   saveText: {
     color: colors.onAccent,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 14.5,
+    fontWeight: '600',
   },
   pressed: {
     opacity: 0.78,
   },
   about: {
-    gap: 6,
-    paddingHorizontal: spacing.xs,
+    gap: 5,
+    paddingHorizontal: 2,
   },
   aboutTitle: {
     color: colors.muted,
-    fontSize: 12.5,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '600',
   },
   aboutText: {
-    color: colors.faint,
+    color: colors.muted,
     fontSize: 11.5,
     lineHeight: 18,
   },
   aboutMuted: {
-    color: colors.faint,
+    color: colors.muted,
     fontSize: 10.5,
   },
 });

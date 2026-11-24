@@ -21,9 +21,9 @@ interface ToastContextValue {
 const ToastContext = createContext<ToastContextValue | null>(null);
 
 const KIND_STYLE: Record<ToastKind, { color: string; icon: keyof typeof Ionicons.glyphMap }> = {
-  success: { color: colors.success, icon: 'checkmark-circle' },
-  info: { color: colors.info, icon: 'information-circle' },
-  error: { color: colors.danger, icon: 'alert-circle' },
+  success: { color: '#7CC69B', icon: 'checkmark-circle' },
+  info: { color: colors.bg, icon: 'information-circle' },
+  error: { color: '#EB7D72', icon: 'alert-circle' },
 };
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -105,8 +105,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             },
           ]}
         >
-          <View style={[styles.toast, { borderColor: `${kindStyle.color}40` }]}>
-            <Ionicons name={kindStyle.icon} size={18} color={kindStyle.color} />
+          <View style={styles.toast}>
+            <Ionicons name={kindStyle.icon} size={17} color={kindStyle.color} />
             <Text style={styles.text} numberOfLines={3}>
               {toast.message}
             </Text>
@@ -135,17 +135,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     maxWidth: '100%',
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: colors.text,
     borderRadius: radius.pill,
-    borderWidth: 1,
-    borderTopColor: colors.rimTop,
-    paddingVertical: 11,
-    paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
     ...elevation.floating,
   },
   text: {
-    color: colors.text,
-    fontSize: 13.5,
+    color: colors.bg,
+    fontSize: 13,
     fontWeight: '600',
     lineHeight: 19,
     flexShrink: 1,

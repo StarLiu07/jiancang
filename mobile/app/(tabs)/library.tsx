@@ -3,7 +3,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   FlatList,
   Pressable,
   RefreshControl,
@@ -17,11 +16,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { api, pickErrorMessage } from '../../src/api/client';
 import { ClipCard } from '../../src/components/ClipCard';
-import { FadeSlideIn, MOTION, SkeletonList, SpringPressable } from '../../src/components/Motion';
+import { FadeSlideIn, SkeletonList, SpringPressable } from '../../src/components/Motion';
 import { QuickAddModal, type QuickAddPayload } from '../../src/components/QuickAddModal';
 import { useToast } from '../../src/components/Toast';
 import { useSettings } from '../../src/store/settings';
-import { colors, elevation, platformMeta, radius, spacing } from '../../src/theme';
+import { colors, elevation, fonts, radius, spacing } from '../../src/theme';
 import type { ClipSummary, Platform, ReviewState, TagItem } from '../../src/types';
 
 const PAGE_SIZE = 20;
@@ -30,9 +29,13 @@ const PLATFORM_FILTERS: { key: Platform | 'all'; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'xiaohongshu', label: '小红书' },
   { key: 'wechat', label: '公众号' },
-  { key: 'x', label: 'X' },
   { key: 'web', label: '网页' },
+  { key: 'x', label: 'X' },
 ];
+
+function ListSeparator() {
+  return <View style={styles.separator} />;
+}
 
 export default function LibraryScreen() {
   const { config, ready } = useSettings();
@@ -41,7 +44,6 @@ export default function LibraryScreen() {
 
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [searchFocused, setSearchFocused] = useState(false);
   const [platform, setPlatform] = useState<Platform | 'all'>('all');
   const [reviewState, setReviewState] = useState<Extract<ReviewState, 'active' | 'archived'>>('active');
   const [tag, setTag] = useState<string | null>(null);
@@ -58,18 +60,8 @@ export default function LibraryScreen() {
   const [quickAddError, setQuickAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
-  const [segmentWidth, setSegmentWidth] = useState(0);
-  const segmentSlide = useRef(new Animated.Value(0)).current;
-
   const offsetRef = useRef(0);
   const requestRef = useRef(0);
-
-  useEffect(() => {
-    Animated.spring(segmentSlide, {
-      toValue: reviewState === 'active' ? 0 : 1,
-      ...MOTION.springSnappy,
-    }).start();
-  }, [reviewState, segmentSlide]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 350);
@@ -161,7 +153,7 @@ export default function LibraryScreen() {
           tags: payload.tags.length ? payload.tags : undefined,
         },
       );
-      show(result.deduplicated ? '已在收藏库' : '已剪藏', result.deduplicated ? 'info' : 'success');
+      show(result.deduplicated ? '已在收藏目录' : '已交给后台解析', result.deduplicated ? 'info' : 'success');
       setQuickAddVisible(false);
       void loadPage('refresh');
       void loadTags();
@@ -177,59 +169,42 @@ export default function LibraryScreen() {
   };
 
   const activeFilterCount = (platform === 'all' ? 0 : 1) + (tag ? 1 : 0) + (debouncedQuery ? 1 : 0);
-  const pillTranslateX = segmentSlide.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, segmentWidth],
-  });
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <View style={styles.titleText}>
-            <Text style={styles.title}>收藏库</Text>
-            <Text style={styles.subtitle}>
-              {loading ? '正在同步…' : `共 ${total} 条${activeFilterCount ? ' · 已筛选' : ''}`}
-            </Text>
-          </View>
+          <Text style={styles.title}>收藏目录</Text>
 
-          <View
-            style={styles.segmented}
-            onLayout={(e) => {
-              const inner = Math.max(0, e.nativeEvent.layout.width - 6);
-              setSegmentWidth(inner / 2);
-            }}
-          >
-            {segmentWidth > 0 ? (
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.segmentIndicator,
-                  { width: segmentWidth, transform: [{ translateX: pillTranslateX }] },
-                ]}
-              />
-            ) : null}
-            <Pressable onPress={() => setReviewState('active')} style={styles.segment}>
-              <Text style={[styles.segmentText, reviewState === 'active' && styles.segmentTextActive]}>在库</Text>
+          <View style={styles.stateTabs}>
+            <Pressable
+              onPress={() => setReviewState('active')}
+              hitSlop={6}
+              style={[styles.stateTab, reviewState === 'active' && styles.stateTabActive]}
+            >
+              <Text style={[styles.stateTabText, reviewState === 'active' && styles.stateTabTextActive]}>
+                在库{reviewState === 'active' && !loading ? ` ${total}` : ''}
+              </Text>
             </Pressable>
-            <Pressable onPress={() => setReviewState('archived')} style={styles.segment}>
-              <Text style={[styles.segmentText, reviewState === 'archived' && styles.segmentTextActive]}>已归档</Text>
+
+            <Pressable
+              onPress={() => setReviewState('archived')}
+              hitSlop={6}
+              style={[styles.stateTab, reviewState === 'archived' && styles.stateTabActive]}
+            >
+              <Text style={[styles.stateTabText, reviewState === 'archived' && styles.stateTabTextActive]}>
+                已归档{reviewState === 'archived' && !loading ? ` ${total}` : ''}
+              </Text>
             </Pressable>
           </View>
         </View>
 
-        <View style={[styles.searchBar, searchFocused && styles.searchBarFocused]}>
-          <Ionicons
-            name="search"
-            size={16}
-            color={searchFocused ? colors.textSecondary : colors.faint}
-          />
+        <View style={styles.searchBar}>
+          <Ionicons name="search" size={15} color={colors.muted} />
           <TextInput
             value={query}
             onChangeText={setQuery}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-            placeholder="搜标题、摘要、标签…"
+            placeholder="检索篇名、摘要或标签"
             placeholderTextColor={colors.faint}
             style={styles.searchInput}
             autoCapitalize="none"
@@ -239,7 +214,7 @@ export default function LibraryScreen() {
           />
           {query ? (
             <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={16} color={colors.muted} />
+              <Ionicons name="close" size={15} color={colors.muted} />
             </Pressable>
           ) : null}
         </View>
@@ -247,22 +222,22 @@ export default function LibraryScreen() {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chipRow}
+          contentContainerStyle={styles.filterRow}
           keyboardShouldPersistTaps="handled"
         >
           {PLATFORM_FILTERS.map((filter) => {
             const selected = platform === filter.key;
-            const dotColor = filter.key === 'all' ? colors.textSecondary : platformMeta[filter.key].color;
             return (
-              <SpringPressable
+              <Pressable
                 key={filter.key}
                 onPress={() => setPlatform(filter.key)}
-                scaleTo={0.94}
-                contentStyle={[styles.chip, selected && styles.chipSelected]}
+                hitSlop={6}
+                style={styles.filterItem}
               >
-                {filter.key !== 'all' ? <View style={[styles.chipDot, { backgroundColor: dotColor }]} /> : null}
-                <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{filter.label}</Text>
-              </SpringPressable>
+                <Text style={[styles.filterText, selected && styles.filterTextSelected]}>
+                  {filter.label}
+                </Text>
+              </Pressable>
             );
           })}
         </ScrollView>
@@ -277,17 +252,17 @@ export default function LibraryScreen() {
             {tags.map((item) => {
               const selected = tag === item.name;
               return (
-                <SpringPressable
+                <Pressable
                   key={item.name}
                   onPress={() => setTag(selected ? null : item.name)}
-                  scaleTo={0.94}
-                  contentStyle={[styles.tagChip, selected && styles.tagChipSelected]}
+                  hitSlop={4}
+                  style={styles.tagItem}
                 >
                   <Text style={[styles.tagText, selected && styles.tagTextSelected]}>
                     #{item.name}
                     <Text style={[styles.tagCount, selected && styles.tagCountSelected]}> {item.count}</Text>
                   </Text>
-                </SpringPressable>
+                </Pressable>
               );
             })}
           </ScrollView>
@@ -313,14 +288,14 @@ export default function LibraryScreen() {
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => <ClipCard clip={item} onPress={() => openClip(item.id)} />}
         contentContainerStyle={[styles.listContent, !items.length && styles.listEmptyContent]}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
+        ItemSeparatorComponent={ListSeparator}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={refreshAll}
             tintColor={colors.accent}
             colors={[colors.accent]}
-            progressBackgroundColor={colors.surfaceElevated}
+            progressBackgroundColor={colors.sheet}
           />
         }
         onEndReached={handleEndReached}
@@ -333,11 +308,15 @@ export default function LibraryScreen() {
           ) : (
             <FadeSlideIn distance={12} style={styles.emptyBox}>
               <View style={styles.emptyIcon}>
-                <Ionicons name="albums-outline" size={28} color={colors.muted} />
+                <Ionicons name="file-tray-outline" size={24} color={colors.muted} />
               </View>
-              <Text style={styles.emptyTitle}>{activeFilterCount ? '没有匹配的剪藏' : '收藏库还是空的'}</Text>
+              <Text style={styles.emptyTitle}>
+                {activeFilterCount ? '这一栏里还没有对应的剪藏' : '收藏目录还是空的'}
+              </Text>
               <Text style={styles.emptyText}>
-                {activeFilterCount ? '换个关键词或清掉筛选试试。' : '从小红书 / 公众号 / X 分享，或点右下角 + 手动剪藏。'}
+                {activeFilterCount
+                  ? '换个关键词或清空筛选条件试试。'
+                  : '从小红书、公众号、X 分享，或点右下角 + 手动收入书房。'}
               </Text>
               {activeFilterCount ? (
                 <SpringPressable
@@ -374,9 +353,9 @@ export default function LibraryScreen() {
         scaleTo={0.9}
         style={styles.fabAnchor}
         contentStyle={styles.fab}
-        accessibilityLabel="快速剪藏"
+        accessibilityLabel="手动剪藏"
       >
-        <Ionicons name="add" size={26} color={colors.onAccent} />
+        <Ionicons name="add" size={22} color={colors.onAccent} />
       </SpringPressable>
 
       <QuickAddModal
@@ -396,66 +375,44 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   header: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.md,
-    gap: 11,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 10,
+    gap: 10,
+    borderBottomWidth: 1,
     borderBottomColor: colors.borderSubtle,
   },
   titleRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     justifyContent: 'space-between',
     gap: spacing.md,
   },
-  titleText: {
-    gap: 2,
-  },
   title: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.3,
+    fontSize: 24,
+    fontWeight: '700',
   },
-  subtitle: {
-    color: colors.faint,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  segmented: {
-    position: 'relative',
+  stateTabs: {
     flexDirection: 'row',
-    width: 132,
-    backgroundColor: colors.surface,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    padding: 3,
-  },
-  segmentIndicator: {
-    position: 'absolute',
-    top: 3,
-    bottom: 3,
-    left: 3,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surfaceRaised,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  segment: {
-    flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 6,
-    borderRadius: radius.pill,
+    gap: 16,
   },
-  segmentText: {
-    color: colors.faint,
-    fontSize: 12,
-    fontWeight: '600',
+  stateTab: {
+    paddingBottom: 3,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
   },
-  segmentTextActive: {
+  stateTabActive: {
+    borderBottomColor: colors.accent,
+  },
+  stateTabText: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  stateTabTextActive: {
     color: colors.text,
     fontWeight: '700',
   },
@@ -463,101 +420,72 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: 8,
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    paddingHorizontal: 14,
-    height: 44,
-  },
-  searchBarFocused: {
-    borderColor: colors.borderStrong,
-    backgroundColor: colors.surfaceAlt,
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    height: 38,
   },
   searchInput: {
     flex: 1,
     color: colors.text,
-    fontSize: 14,
+    fontSize: 13.5,
     padding: 0,
   },
 
-  chipRow: {
-    gap: 7,
+  filterRow: {
+    gap: 16,
     paddingRight: spacing.lg,
+    paddingVertical: 1,
   },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.surface,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  filterItem: {
+    paddingVertical: 2,
   },
-  chipSelected: {
-    backgroundColor: colors.accentSoft,
-    borderColor: colors.accentBorder,
-  },
-  chipDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  chipText: {
+  filterText: {
     color: colors.muted,
     fontSize: 12.5,
-    fontWeight: '600',
+    fontWeight: '400',
   },
-  chipTextSelected: {
+  filterTextSelected: {
     color: colors.accent,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 
   tagRow: {
-    gap: 4,
+    gap: 12,
     paddingRight: spacing.lg,
     marginTop: -2,
   },
-  tagChip: {
-    borderRadius: radius.sm,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  tagChipSelected: {
-    backgroundColor: colors.glassStrong,
+  tagItem: {
+    paddingVertical: 2,
   },
   tagText: {
-    color: colors.faint,
+    color: colors.muted,
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '400',
   },
   tagTextSelected: {
-    color: colors.text,
-    fontWeight: '700',
+    color: colors.accent,
+    fontWeight: '600',
   },
   tagCount: {
     color: colors.faint,
-    fontSize: 10.5,
-    opacity: 0.75,
+    fontSize: 11,
   },
   tagCountSelected: {
     color: colors.accent,
-    opacity: 1,
   },
 
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginHorizontal: spacing.lg,
+    marginHorizontal: 18,
     marginTop: spacing.md,
     backgroundColor: colors.dangerSoft,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: `${colors.danger}40`,
+    borderColor: `${colors.danger}29`,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
@@ -569,43 +497,44 @@ const styles = StyleSheet.create({
   errorRetry: {
     color: colors.danger,
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '700',
   },
 
   listContent: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: 14,
-    paddingBottom: 112,
+    paddingHorizontal: 18,
+    paddingTop: 4,
+    paddingBottom: 96,
   },
   listEmptyContent: {
     flexGrow: 1,
   },
   separator: {
-    height: 10,
+    height: 1,
+    backgroundColor: colors.borderSubtle,
   },
   emptyBox: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
-    paddingVertical: 70,
+    paddingVertical: 64,
     paddingHorizontal: spacing.xl,
   },
   emptyIcon: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.xs,
   },
   emptyTitle: {
+    fontFamily: fonts.serif,
     color: colors.text,
     fontSize: 17,
     fontWeight: '700',
+    textAlign: 'center',
   },
   emptyText: {
     color: colors.muted,
@@ -615,17 +544,15 @@ const styles = StyleSheet.create({
   },
   emptyButton: {
     marginTop: spacing.sm,
-    backgroundColor: colors.surfaceElevated,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.lg,
+    backgroundColor: colors.text,
+    borderRadius: 8,
+    paddingHorizontal: 16,
     paddingVertical: 9,
   },
   emptyButtonText: {
-    color: colors.text,
+    color: colors.bg,
     fontSize: 12.5,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   footerLoading: {
     paddingVertical: spacing.lg,
@@ -640,16 +567,14 @@ const styles = StyleSheet.create({
 
   fabAnchor: {
     position: 'absolute',
-    right: spacing.lg,
-    bottom: spacing.xl,
+    right: 16,
+    bottom: 16,
   },
   fab: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.accent,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.22)',
     alignItems: 'center',
     justifyContent: 'center',
     ...elevation.accent,

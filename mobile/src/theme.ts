@@ -3,56 +3,57 @@ import { Platform as RNPlatform, type ViewStyle } from 'react-native';
 import type { Platform } from './types';
 
 /**
- * Obsidian Glass design tokens — aligned with the frosted-card + coral-clamp app icon.
+ * 「清晨折页」暖纸书房色板 — 宣纸米白、绵白纸页、松烟墨、印泥朱砂。
  *
- * Surface hierarchy (darkest -> lightest):
- *   bg (#090B0F) -> surface (#11151D) -> surfaceAlt (#141923)
- *   -> surfaceElevated (#171D29) -> surfaceRaised (#202736)
+ * Surface hierarchy:
+ *   bg (#F6F2E8) — 宣纸底
+ *   sheet / surfaceElevated (#FCF9F2) — 绵白纸页
+ *   surface (#EFE9DC) — 浅米灰功能层
+ *   surfaceAlt / surfaceRaised (#E6DFCF) — 沉降纸层
  */
 export const colors = {
-  // Canvas & layered surfaces
-  bg: '#090B0F',
-  bgElevated: '#0D1017',
-  surface: '#11151D',
-  surfaceAlt: '#141923',
-  surfaceElevated: '#171D29',
-  surfaceRaised: '#202736',
+  // Canvas & warm paper layers
+  bg: '#F6F2E8',
+  sheet: '#FCF9F2',
+  surface: '#EFE9DC',
+  surfaceAlt: '#E6DFCF',
+  surfaceElevated: '#FCF9F2',
+  surfaceRaised: '#E6DFCF',
 
-  // Translucent frosted layers
-  glass: 'rgba(255, 255, 255, 0.045)',
-  glassStrong: 'rgba(255, 255, 255, 0.085)',
-
-  // Hairline light rims (replaces heavy opaque borders)
-  borderSubtle: 'rgba(255, 255, 255, 0.055)',
-  border: 'rgba(255, 255, 255, 0.085)',
-  borderStrong: 'rgba(255, 255, 255, 0.14)',
-  rimTop: 'rgba(255, 255, 255, 0.13)',
+  // Subtle ink hairlines
+  borderSubtle: 'rgba(31, 28, 24, 0.10)',
+  border: 'rgba(31, 28, 24, 0.14)',
+  borderStrong: 'rgba(31, 28, 24, 0.18)',
 
   // Typography ink ramp
-  text: '#F5F7FA',
-  textSecondary: '#C5CCD9',
-  muted: '#8690A4',
-  faint: '#596275',
+  text: '#1F1C18',
+  textSecondary: '#524B42',
+  muted: '#867C70',
+  faint: '#A39888',
 
-  // Signature coral-vermilion focal accent (sole primary highlight)
-  accent: '#FF6B4A',
-  accentBright: '#FF8468',
-  accentSoft: 'rgba(255, 107, 74, 0.13)',
-  accentBorder: 'rgba(255, 107, 74, 0.34)',
-  accentGlow: 'rgba(255, 107, 74, 0.22)',
-  onAccent: '#180B07',
+  // Signature vermilion-coral seal accent
+  accent: '#D44E30',
+  accentDeep: '#B93E22',
+  accentSoft: 'rgba(212, 78, 48, 0.09)',
+  accentBorder: 'rgba(212, 78, 48, 0.28)',
+  onAccent: '#FFFBF7',
 
-  // Disciplined semantic states (status feedback only)
-  success: '#38D399',
-  successSoft: 'rgba(56, 211, 153, 0.12)',
-  warning: '#F0B348',
-  warningSoft: 'rgba(240, 179, 72, 0.12)',
-  danger: '#F25F5C',
-  dangerSoft: 'rgba(242, 95, 92, 0.12)',
-  info: '#64A1FF',
-  infoSoft: 'rgba(100, 161, 255, 0.12)',
+  // Low-saturation semantic states
+  success: '#3E7A58',
+  successSoft: 'rgba(62, 122, 88, 0.10)',
+  warning: '#B7832B',
+  warningSoft: 'rgba(183, 131, 43, 0.10)',
+  danger: '#C0392B',
+  dangerSoft: 'rgba(192, 57, 43, 0.10)',
+  info: '#496A88',
+  infoSoft: 'rgba(73, 106, 136, 0.10)',
 
-  overlay: 'rgba(4, 6, 10, 0.78)',
+  overlay: 'rgba(31, 28, 24, 0.36)',
+} as const;
+
+export const fonts = {
+  serif: RNPlatform.select({ ios: 'Songti SC', default: 'serif' }) ?? 'serif',
+  mono: RNPlatform.select({ ios: 'Menlo', default: 'monospace' }) ?? 'monospace',
 } as const;
 
 export const spacing = {
@@ -66,56 +67,60 @@ export const spacing = {
 
 export const radius = {
   sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 22,
-  xxl: 26,
+  md: 10,
+  lg: 14,
+  xl: 18,
+  xxl: 22,
   pill: 999,
 } as const;
 
 export const elevation: Record<'card' | 'hero' | 'floating' | 'accent', ViewStyle> = {
   card: RNPlatform.select<ViewStyle>({
     ios: {
-      shadowColor: '#000000',
-      shadowOpacity: 0.28,
-      shadowRadius: 12,
-      shadowOffset: { width: 0, height: 6 },
+      shadowColor: '#2D2416',
+      shadowOpacity: 0.08,
+      shadowRadius: 14,
+      shadowOffset: { width: 0, height: 8 },
     },
     default: {
-      elevation: 3,
+      elevation: 2,
+      shadowColor: '#2D2416',
     },
   }),
   hero: RNPlatform.select<ViewStyle>({
     ios: {
-      shadowColor: '#000000',
-      shadowOpacity: 0.45,
-      shadowRadius: 22,
-      shadowOffset: { width: 0, height: 12 },
+      shadowColor: '#2D2416',
+      shadowOpacity: 0.09,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 10 },
     },
     default: {
-      elevation: 8,
+      elevation: 3,
+      shadowColor: '#2D2416',
     },
   }),
   floating: RNPlatform.select<ViewStyle>({
     ios: {
-      shadowColor: '#000000',
-      shadowOpacity: 0.42,
+      shadowColor: '#2D2416',
+      shadowOpacity: 0.14,
       shadowRadius: 16,
       shadowOffset: { width: 0, height: 8 },
     },
     default: {
-      elevation: 10,
+      elevation: 6,
+      shadowColor: '#2D2416',
     },
   }),
   accent: RNPlatform.select<ViewStyle>({
     ios: {
-      shadowColor: '#FF6B4A',
-      shadowOpacity: 0.34,
-      shadowRadius: 14,
+      shadowColor: '#D44E30',
+      shadowOpacity: 0.24,
+      shadowRadius: 12,
       shadowOffset: { width: 0, height: 6 },
     },
     default: {
-      elevation: 8,
+      elevation: 4,
+      shadowColor: '#D44E30',
     },
   }),
 };
@@ -130,26 +135,26 @@ interface PlatformMeta {
 export const platformMeta: Record<Platform, PlatformMeta> = {
   xiaohongshu: {
     label: '小红书',
-    color: '#FF4764',
-    softColor: 'rgba(255, 71, 100, 0.13)',
+    color: '#C84B52',
+    softColor: 'rgba(200, 75, 82, 0.10)',
     short: '红',
   },
   wechat: {
     label: '公众号',
-    color: '#2CC974',
-    softColor: 'rgba(44, 201, 116, 0.13)',
+    color: '#3E7A58',
+    softColor: 'rgba(62, 122, 88, 0.10)',
     short: '微',
   },
   x: {
     label: 'X',
-    color: '#E6EAF2',
-    softColor: 'rgba(230, 234, 242, 0.1)',
+    color: '#3A3631',
+    softColor: 'rgba(58, 54, 49, 0.10)',
     short: 'X',
   },
   web: {
     label: '网页',
-    color: '#64A1FF',
-    softColor: 'rgba(100, 161, 255, 0.13)',
+    color: '#496A88',
+    softColor: 'rgba(73, 106, 136, 0.10)',
     short: '网',
   },
 };

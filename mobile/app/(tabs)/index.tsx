@@ -21,18 +21,22 @@ import { ReviewDeck, type ReviewDeckHandle } from '../../src/components/ReviewDe
 import { useToast } from '../../src/components/Toast';
 import { useClipboardLink } from '../../src/hooks/useClipboardLink';
 import { useSettings } from '../../src/store/settings';
-import { colors, elevation, radius, spacing } from '../../src/theme';
+import { colors, elevation, fonts, radius, spacing } from '../../src/theme';
 import type { ClipDetail, ReviewActionType } from '../../src/types';
 
-const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+
+function pad2(n: number): string {
+  return String(Math.max(0, n)).padStart(2, '0');
+}
 
 function todayLabel(): string {
   const now = new Date();
-  return `${now.getMonth() + 1} 月 ${now.getDate()} 日 · ${WEEKDAYS[now.getDay()]}`;
+  return `${pad2(now.getMonth() + 1)}.${pad2(now.getDate())} ${WEEKDAYS[now.getDay()]}`;
 }
 
 const ACTION_LABEL: Record<ReviewActionType, string> = {
-  snooze: '已推迟到下次',
+  snooze: '已留待下次翻阅',
   archive: '已消化',
   delete: '已删除',
 };
@@ -43,7 +47,7 @@ function ProgressSegment({ done, current }: { done: boolean; current: boolean })
   useEffect(() => {
     Animated.timing(fill, {
       toValue: done ? 1 : 0,
-      duration: 280,
+      duration: 240,
       easing: MOTION.easeOut,
       useNativeDriver: true,
     }).start();
@@ -165,7 +169,7 @@ export default function ReviewTodayScreen() {
     setCapturing(true);
     try {
       const result = await api.createClip({ baseUrl: config.baseUrl, token: config.token }, { input: link });
-      show(result.deduplicated ? '已在收藏库' : '已剪藏', result.deduplicated ? 'info' : 'success');
+      show(result.deduplicated ? '已在收藏目录' : '已收进书房', result.deduplicated ? 'info' : 'success');
       await dismiss(link);
     } catch (err) {
       show(pickErrorMessage(err), 'error');
@@ -226,6 +230,13 @@ export default function ReviewTodayScreen() {
     outputRange: ['0deg', '360deg'],
   });
 
+  const doneHeading =
+    reviewedToday >= dailyTarget
+      ? dailyTarget === 5
+        ? '今日五页已读毕'
+        : `今日 ${dailyTarget} 页已读毕`
+      : '暂时没有待回顾的剪藏';
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView
@@ -237,39 +248,39 @@ export default function ReviewTodayScreen() {
             onRefresh={() => void load('refresh')}
             tintColor={colors.accent}
             colors={[colors.accent]}
-            progressBackgroundColor={colors.surfaceElevated}
+            progressBackgroundColor={colors.sheet}
           />
         }
       >
         <View style={styles.headerRow}>
           <View style={styles.headerText}>
-            <Text style={styles.eyebrow}>{todayLabel()}</Text>
-            <Text style={styles.title}>今日回顾</Text>
+            <Text style={styles.dateMono}>{todayLabel()}</Text>
+            <Text style={styles.title}>今日折页</Text>
           </View>
-          <SpringPressable
-            onPress={() => void load('refresh')}
-            scaleTo={0.9}
-            hitSlop={8}
-            contentStyle={styles.refreshButton}
-            accessibilityLabel="刷新今日回顾"
-          >
-            <Animated.View style={{ transform: [{ rotate: spinInterpolate }] }}>
-              <Ionicons name="refresh" size={17} color={colors.textSecondary} />
-            </Animated.View>
-          </SpringPressable>
+
+          <View style={styles.headerRight}>
+            <View style={styles.progressCaptionRow}>
+              <Text style={styles.progressCaption}>今日进度</Text>
+              <SpringPressable
+                onPress={() => void load('refresh')}
+                scaleTo={0.88}
+                hitSlop={8}
+                contentStyle={styles.refreshIconBtn}
+                accessibilityLabel="刷新今日折页"
+              >
+                <Animated.View style={{ transform: [{ rotate: spinInterpolate }] }}>
+                  <Ionicons name="refresh" size={13} color={colors.muted} />
+                </Animated.View>
+              </SpringPressable>
+            </View>
+            <Text style={styles.progressCounter}>
+              <Text style={styles.progressStrong}>{pad2(reviewedToday)}</Text>
+              <Text style={styles.progressMuted}> / {pad2(dailyTarget)}</Text>
+            </Text>
+          </View>
         </View>
 
         <View style={styles.progressSection}>
-          <View style={styles.progressTopRow}>
-            <Text style={styles.progressLabel}>
-              已回顾 <Text style={styles.progressStrong}>{reviewedToday}</Text>
-              <Text style={styles.progressMuted}> / {dailyTarget}</Text>
-            </Text>
-            <Text style={styles.progressHint}>
-              {totalActive > 0 ? `收藏库 ${totalActive} 条` : '收藏库还是空的'}
-            </Text>
-          </View>
-
           {useSegments ? (
             <View style={styles.segmentTrack}>
               {Array.from({ length: dailyTarget }).map((_, idx) => (
@@ -299,7 +310,7 @@ export default function ReviewTodayScreen() {
         {error ? (
           <FadeSlideIn distance={8}>
             <View style={styles.errorCard}>
-              <Ionicons name="cloud-offline-outline" size={20} color={colors.danger} />
+              <Ionicons name="cloud-offline-outline" size={19} color={colors.danger} />
               <View style={styles.errorBody}>
                 <Text style={styles.errorTitle}>没能连上剪藏服务</Text>
                 <Text style={styles.errorText}>{error}</Text>
@@ -317,15 +328,15 @@ export default function ReviewTodayScreen() {
           <FadeSlideIn distance={14} duration={300}>
             <View style={styles.doneCard}>
               <Animated.View style={[styles.doneIcon, { transform: [{ scale: doneBadgeScale }] }]}>
-                <Ionicons name="checkmark-done" size={28} color={colors.success} />
+                <Ionicons name="checkmark" size={20} color={colors.accent} />
               </Animated.View>
-              <Text style={styles.doneTitle}>
-                {reviewedToday >= dailyTarget ? '今天的回顾完成啦' : '暂时没有待回顾的剪藏'}
-              </Text>
+              <Text style={styles.doneTitle}>{doneHeading}</Text>
               <Text style={styles.doneText}>
                 {reviewedToday >= dailyTarget
-                  ? `已完成 ${reviewedToday} / ${dailyTarget}，让收藏真正沉淀下来。`
-                  : '可以去收藏库挑几条，或者等下一次提醒。'}
+                  ? '这一批剪藏已经安放妥当，明天清晨再为你挑出新的一批。'
+                  : totalActive > 0
+                    ? `书房里还有 ${totalActive} 条剪藏，可以去收藏目录翻看。`
+                    : '可以去收藏目录收入几条，或者等下一次提醒。'}
               </Text>
               <View style={styles.doneActions}>
                 <SpringPressable
@@ -333,7 +344,7 @@ export default function ReviewTodayScreen() {
                   scaleTo={0.95}
                   contentStyle={styles.donePrimary}
                 >
-                  <Ionicons name="refresh" size={16} color={colors.onAccent} />
+                  <Ionicons name="refresh" size={14} color={colors.bg} />
                   <Text style={styles.donePrimaryText}>再拉一批</Text>
                 </SpringPressable>
                 <SpringPressable
@@ -341,8 +352,8 @@ export default function ReviewTodayScreen() {
                   scaleTo={0.95}
                   contentStyle={styles.doneSecondary}
                 >
-                  <Ionicons name="albums-outline" size={16} color={colors.textSecondary} />
-                  <Text style={styles.doneSecondaryText}>去收藏库</Text>
+                  <Ionicons name="file-tray-outline" size={14} color={colors.textSecondary} />
+                  <Text style={styles.doneSecondaryText}>去收藏目录</Text>
                 </SpringPressable>
               </View>
             </View>
@@ -352,7 +363,7 @@ export default function ReviewTodayScreen() {
             <ReviewDeck
               ref={deckRef}
               clip={current}
-              queueLabel={`${Math.min(index + 1, items.length)} / ${items.length}`}
+              queueLabel={`${Math.min(index + 1, items.length)}/${items.length}`}
               remaining={remaining}
               disabled={acting}
               onOpenDetail={() => openDetail(current.id)}
@@ -368,8 +379,8 @@ export default function ReviewTodayScreen() {
                 style={styles.secondaryActionFlex}
                 contentStyle={[styles.secondaryAction, acting && styles.actionMuted]}
               >
-                <Ionicons name="time-outline" size={18} color={colors.textSecondary} />
-                <Text style={styles.secondaryActionLabel}>以后再看</Text>
+                <Ionicons name="time-outline" size={15} color={colors.muted} />
+                <Text style={styles.secondaryActionLabel}>留待下次</Text>
               </SpringPressable>
 
               <SpringPressable
@@ -379,7 +390,7 @@ export default function ReviewTodayScreen() {
                 style={styles.primaryActionFlex}
                 contentStyle={[styles.primaryAction, acting && styles.actionMuted]}
               >
-                <Ionicons name="checkmark-circle" size={19} color={colors.onAccent} />
+                <Ionicons name="checkmark" size={16} color={colors.onAccent} />
                 <Text style={styles.primaryActionLabel}>已消化</Text>
               </SpringPressable>
 
@@ -390,20 +401,22 @@ export default function ReviewTodayScreen() {
                 contentStyle={[styles.ghostDangerAction, acting && styles.actionMuted]}
                 accessibilityLabel="删除剪藏"
               >
-                <Ionicons name="trash-outline" size={18} color={colors.muted} />
+                <Ionicons name="trash-outline" size={16} color={colors.muted} />
               </SpringPressable>
             </View>
 
             {acting ? (
               <View style={styles.syncingRow}>
-                <ActivityIndicator size="small" color={colors.faint} />
+                <ActivityIndicator size="small" color={colors.muted} />
                 <Text style={styles.syncingText}>正在同步…</Text>
               </View>
             ) : (
               <Text style={styles.remainingHint}>
                 {remaining > 0
-                  ? `右滑已消化 · 左滑以后再看 · 还有 ${remaining} 条`
-                  : '右滑已消化 · 左滑以后再看'}
+                  ? `右滑已消化 · 左滑留待下次 · 余 ${remaining} 页`
+                  : totalActive > 0
+                    ? `右滑已消化 · 左滑留待下次 · 在库 ${totalActive} 条`
+                    : '右滑已消化 · 左滑留待下次'}
               </Text>
             )}
           </FadeSlideIn>
@@ -419,95 +432,93 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   content: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
+    paddingHorizontal: 18,
+    paddingTop: 14,
     paddingBottom: spacing.xxl,
-    gap: spacing.lg,
+    gap: 14,
   },
   headerRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSubtle,
     gap: spacing.md,
   },
   headerText: {
     flex: 1,
-    gap: 3,
+    gap: 2,
   },
-  eyebrow: {
+  dateMono: {
+    fontFamily: fonts.mono,
     color: colors.muted,
     fontSize: 12,
-    fontWeight: '600',
-    letterSpacing: 0.6,
   },
   title: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.3,
+    fontSize: 25,
+    lineHeight: 32,
+    fontWeight: '700',
   },
-  refreshButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    alignItems: 'center',
-    justifyContent: 'center',
+  headerRight: {
+    alignItems: 'flex-end',
+    gap: 2,
   },
-
-  progressSection: {
-    gap: 8,
-    marginTop: -4,
-  },
-  progressTopRow: {
+  progressCaptionRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
+    alignItems: 'center',
+    gap: 5,
   },
-  progressLabel: {
+  progressCaption: {
     color: colors.muted,
-    fontSize: 12.5,
-    fontWeight: '500',
+    fontSize: 12,
+  },
+  refreshIconBtn: {
+    padding: 2,
+  },
+  progressCounter: {
+    fontFamily: fonts.mono,
+    fontSize: 15,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   progressStrong: {
     color: colors.accent,
-    fontWeight: '800',
-    fontSize: 14,
-    fontVariant: ['tabular-nums'],
   },
   progressMuted: {
-    color: colors.faint,
-    fontVariant: ['tabular-nums'],
+    color: colors.muted,
   },
-  progressHint: {
-    color: colors.faint,
-    fontSize: 11.5,
+
+  progressSection: {
+    marginTop: -4,
   },
   segmentTrack: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 6,
   },
   segmentBar: {
     flex: 1,
-    height: 4,
+    height: 2,
     borderRadius: 2,
-    backgroundColor: colors.glassStrong,
+    backgroundColor: 'rgba(31, 28, 24, 0.12)',
     overflow: 'hidden',
   },
   segmentBarCurrent: {
-    backgroundColor: colors.accentBorder,
+    height: 3,
+    backgroundColor: colors.accent,
   },
   segmentBarFill: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: 2,
-    backgroundColor: colors.accent,
+    backgroundColor: colors.text,
   },
   progressTrack: {
-    height: 4,
+    height: 3,
     borderRadius: 2,
-    backgroundColor: colors.glassStrong,
+    backgroundColor: 'rgba(31, 28, 24, 0.12)',
     overflow: 'hidden',
   },
   progressFill: {
@@ -522,18 +533,18 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     backgroundColor: colors.dangerSoft,
     borderWidth: 1,
-    borderColor: `${colors.danger}40`,
-    borderRadius: radius.lg,
+    borderColor: `${colors.danger}29`,
+    borderRadius: 12,
     padding: spacing.md,
   },
   errorBody: {
     flex: 1,
-    gap: 3,
+    gap: 2,
   },
   errorTitle: {
     color: colors.text,
     fontSize: 13.5,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   errorText: {
     color: colors.textSecondary,
@@ -541,19 +552,19 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
   errorRetry: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 7,
-    borderRadius: radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
     backgroundColor: colors.danger,
   },
   errorRetryText: {
     color: colors.onAccent,
-    fontSize: 11.5,
-    fontWeight: '800',
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   reviewBlock: {
-    gap: spacing.lg,
+    gap: 14,
   },
 
   actions: {
@@ -565,46 +576,44 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   secondaryAction: {
-    height: 52,
+    height: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
-    backgroundColor: colors.surfaceElevated,
+    gap: 6,
+    backgroundColor: colors.sheet,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderTopColor: colors.rimTop,
-    borderRadius: radius.lg,
+    borderColor: colors.borderStrong,
+    borderRadius: 10,
   },
   secondaryActionLabel: {
     color: colors.textSecondary,
     fontSize: 13.5,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   primaryActionFlex: {
-    flex: 1.45,
+    flex: 1.35,
   },
   primaryAction: {
-    height: 52,
+    height: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
+    gap: 6,
     backgroundColor: colors.accent,
-    borderRadius: radius.lg,
+    borderRadius: 10,
     ...elevation.accent,
   },
   primaryActionLabel: {
     color: colors.onAccent,
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0.2,
+    fontSize: 14,
+    fontWeight: '600',
   },
   ghostDangerAction: {
-    width: 52,
-    height: 52,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: 'transparent',
     borderWidth: 1,
     borderColor: colors.borderSubtle,
     alignItems: 'center',
@@ -612,6 +621,9 @@ const styles = StyleSheet.create({
   },
   actionMuted: {
     opacity: 0.52,
+    // 禁用态不挂阴影，避免 Android 上透出灰影
+    shadowOpacity: 0,
+    elevation: 0,
   },
   syncingRow: {
     flexDirection: 'row',
@@ -620,83 +632,76 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   syncingText: {
-    color: colors.faint,
+    color: colors.muted,
     fontSize: 11.5,
   },
   remainingHint: {
-    color: colors.faint,
+    color: colors.muted,
     fontSize: 11.5,
     textAlign: 'center',
   },
 
   doneCard: {
     alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderTopColor: colors.rimTop,
-    borderRadius: radius.xl,
+    gap: 12,
+    backgroundColor: colors.sheet,
+    borderRadius: radius.lg,
     paddingVertical: 36,
-    paddingHorizontal: spacing.xl,
+    paddingHorizontal: 24,
     ...elevation.card,
   },
   doneIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: colors.successSoft,
-    borderWidth: 1,
-    borderColor: `${colors.success}35`,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
   doneTitle: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 19,
-    fontWeight: '800',
+    fontSize: 20,
+    fontWeight: '700',
     textAlign: 'center',
   },
   doneText: {
-    color: colors.muted,
+    color: colors.textSecondary,
     fontSize: 13.5,
-    lineHeight: 21,
+    lineHeight: 23,
     textAlign: 'center',
   },
   doneActions: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: spacing.sm,
+    marginTop: 6,
   },
   donePrimary: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: colors.accent,
-    borderRadius: radius.pill,
+    backgroundColor: colors.text,
+    borderRadius: 8,
     paddingHorizontal: 18,
-    paddingVertical: 11,
-    ...elevation.accent,
+    paddingVertical: 10,
   },
   donePrimaryText: {
-    color: colors.onAccent,
+    color: colors.bg,
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   doneSecondary: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: colors.glass,
-    borderRadius: radius.pill,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   doneSecondaryText: {
     color: colors.textSecondary,
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 });

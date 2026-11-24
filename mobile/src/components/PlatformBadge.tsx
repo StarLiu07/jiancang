@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { colors, platformMeta, radius, spacing } from '../theme';
+import { colors, platformMeta, radius } from '../theme';
 import type { Platform } from '../types';
 
 interface PlatformBadgeProps {
@@ -10,6 +10,10 @@ interface PlatformBadgeProps {
   glass?: boolean;
 }
 
+/**
+ * Lightweight editorial platform indicator: low-saturation dot + text.
+ * Keeps `muted` and `glass` props compatible in warm-paper tones.
+ */
 export function PlatformBadge({
   platform,
   size = 'sm',
@@ -18,46 +22,43 @@ export function PlatformBadge({
 }: PlatformBadgeProps) {
   const meta = platformMeta[platform];
   const compact = size === 'sm';
-  const isX = platform === 'x';
 
-  const bg = glass
-    ? 'rgba(9, 11, 15, 0.72)'
-    : muted
-      ? colors.glass
-      : isX
-        ? 'rgba(230, 234, 242, 0.08)'
-        : meta.softColor;
-
-  const borderColor = glass
-    ? colors.borderStrong
-    : muted
-      ? 'transparent'
-      : isX
-        ? 'rgba(230, 234, 242, 0.22)'
-        : `${meta.color}38`;
-
-  const textColor = glass
-    ? colors.text
-    : muted
-      ? colors.textSecondary
-      : isX
-        ? colors.text
-        : meta.color;
+  if (glass) {
+    return (
+      <View
+        style={[
+          styles.glassBadge,
+          {
+            paddingHorizontal: compact ? 8 : 10,
+            paddingVertical: compact ? 3 : 4,
+          },
+        ]}
+      >
+        <View style={[styles.dot, compact && styles.dotCompact, { backgroundColor: meta.color }]} />
+        <Text
+          style={[
+            styles.label,
+            { color: colors.text, fontSize: compact ? 11.5 : 12 },
+          ]}
+        >
+          {meta.label}
+        </Text>
+      </View>
+    );
+  }
 
   return (
-    <View
-      style={[
-        styles.badge,
-        {
-          backgroundColor: bg,
-          borderColor,
-          paddingHorizontal: compact ? 8 : 10,
-          paddingVertical: compact ? 3 : 4,
-        },
-      ]}
-    >
-      <View style={[styles.dot, { backgroundColor: meta.color }]} />
-      <Text style={[styles.label, { color: textColor, fontSize: compact ? 10.5 : 11.5 }]}>
+    <View style={styles.plainBadge}>
+      <View style={[styles.dot, compact && styles.dotCompact, { backgroundColor: meta.color }]} />
+      <Text
+        style={[
+          styles.label,
+          {
+            color: muted ? colors.muted : colors.textSecondary,
+            fontSize: compact ? 12 : 12.5,
+          },
+        ]}
+      >
         {meta.label}
       </Text>
     </View>
@@ -65,21 +66,34 @@ export function PlatformBadge({
 }
 
 const styles = StyleSheet.create({
-  badge: {
+  plainBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
+    alignSelf: 'flex-start',
+  },
+  glassBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth * 2,
+    backgroundColor: 'rgba(252, 249, 242, 0.92)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
     alignSelf: 'flex-start',
   },
   dot: {
-    width: 5.5,
-    height: 5.5,
+    width: 6,
+    height: 6,
     borderRadius: 3,
   },
+  dotCompact: {
+    width: 5.5,
+    height: 5.5,
+    borderRadius: 2.75,
+  },
   label: {
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    fontWeight: '500',
+    letterSpacing: 0.1,
   },
 });

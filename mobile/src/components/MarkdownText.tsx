@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { colors, radius, spacing } from '../theme';
+import { colors, fonts, spacing } from '../theme';
 
 type BlockKind = 'h1' | 'h2' | 'h3' | 'paragraph' | 'bullet' | 'quote' | 'divider';
 
@@ -81,8 +81,8 @@ interface MarkdownTextProps {
 }
 
 /**
- * Editorial markdown renderer (headings / bullets / quotes / dividers).
- * Optimized for calm long-form dark-mode reading on the obsidian canvas.
+ * Editorial markdown renderer (headings / bullets / quotes / dividers)
+ * tailored for calm long-form reading on warm paper sheets.
  */
 export function MarkdownText({ content, selectable = false }: MarkdownTextProps) {
   const blocks = parseBlocks(content);
@@ -123,7 +123,7 @@ export function MarkdownText({ content, selectable = false }: MarkdownTextProps)
           case 'bullet':
             return (
               <View key={key} style={styles.bulletRow}>
-                <View style={styles.bulletDot} />
+                <Text style={styles.bulletDash}>—</Text>
                 <Text selectable={selectable} style={styles.bulletText}>
                   {block.text}
                 </Text>
@@ -143,25 +143,26 @@ export function MarkdownText({ content, selectable = false }: MarkdownTextProps)
 
 const styles = StyleSheet.create({
   container: {
-    gap: 12,
+    gap: 14,
   },
   h1: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 21,
-    lineHeight: 30,
-    fontWeight: '800',
-    letterSpacing: -0.2,
+    fontSize: 20,
+    lineHeight: 29,
+    fontWeight: '700',
     marginTop: spacing.md,
   },
   h2: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 18,
-    lineHeight: 27,
+    fontSize: 17.5,
+    lineHeight: 26,
     fontWeight: '700',
-    letterSpacing: -0.1,
     marginTop: spacing.md,
   },
   h3: {
+    fontFamily: fonts.serif,
     color: colors.text,
     fontSize: 15.5,
     lineHeight: 24,
@@ -169,45 +170,45 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   paragraph: {
-    color: colors.textSecondary,
-    fontSize: 15.5,
-    lineHeight: 27,
-    letterSpacing: 0.15,
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 28.5,
+    letterSpacing: 0.2,
   },
   bulletRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 10,
-    paddingLeft: spacing.xs,
+    gap: 9,
+    paddingLeft: 2,
   },
-  bulletDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: colors.accent,
-    marginTop: 11,
+  bulletDash: {
+    color: colors.accent,
+    fontFamily: fonts.mono,
+    fontSize: 13,
+    lineHeight: 28.5,
   },
   bulletText: {
     flex: 1,
-    color: colors.textSecondary,
+    color: colors.text,
     fontSize: 15,
-    lineHeight: 26,
+    lineHeight: 28.5,
+    letterSpacing: 0.2,
   },
   quote: {
-    borderLeftWidth: 2.5,
-    borderLeftColor: colors.accent,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.borderStrong,
     backgroundColor: colors.surface,
-    borderRadius: radius.sm,
-    paddingVertical: spacing.md,
+    borderRadius: 6,
+    paddingVertical: 10,
     paddingHorizontal: spacing.md,
   },
   quoteText: {
-    color: colors.muted,
+    color: colors.textSecondary,
     fontSize: 14,
-    lineHeight: 23,
+    lineHeight: 24,
   },
   divider: {
-    height: StyleSheet.hairlineWidth * 2,
+    height: StyleSheet.hairlineWidth,
     backgroundColor: colors.borderSubtle,
     marginVertical: spacing.md,
   },

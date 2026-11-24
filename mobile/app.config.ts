@@ -12,29 +12,32 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: '剪藏',
   slug: 'jiancang',
-  version: '0.2.0',
+  version: '0.3.0',
   orientation: 'portrait',
   scheme: 'jiancang',
   icon: './assets/icon.png',
-  backgroundColor: '#090B0F',
+  backgroundColor: '#F6F2E8',
   splash: {
     image: './assets/splash-icon.png',
     resizeMode: 'contain',
+    // 保留 #0E1014 以贴合原 splash-icon.png 的深色羽化圆底，避免浅色底露出暗边
     backgroundColor: '#0E1014',
   },
   androidStatusBar: {
-    barStyle: 'light-content',
+    barStyle: 'dark-content',
+    backgroundColor: '#F6F2E8',
   },
   androidNavigationBar: {
-    backgroundColor: '#0D1017',
-    barStyle: 'light-content',
+    backgroundColor: '#F6F2E8',
+    barStyle: 'dark-content',
   },
   android: {
     package: 'com.sheldon.jiancang',
-    backgroundColor: '#090B0F',
+    backgroundColor: '#F6F2E8',
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
       monochromeImage: './assets/monochrome-icon.png',
+      // 保留 #0E1014 以贴合原 adaptive-icon.png 的深色羽化圆底
       backgroundColor: '#0E1014',
     },
   },
@@ -48,7 +51,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'expo-notifications',
       {
         icon: './assets/notification-icon.png',
-        color: '#FF6B4A',
+        color: '#D44E30',
       },
     ],
     [

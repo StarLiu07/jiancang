@@ -1,116 +1,178 @@
-import { Ionicons } from '@expo/vector-icons';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { Image, Platform as RNPlatform, StyleSheet, Text, View } from 'react-native';
 
 import { mediaUrl } from '../api/client';
 import { useSettings } from '../store/settings';
-import { colors, elevation, platformMeta, radius, spacing, statusMeta } from '../theme';
-import type { ClipSummary, Platform } from '../types';
+import { colors, elevation, fonts, platformMeta, radius, statusMeta } from '../theme';
+import type { ClipSummary } from '../types';
 import { formatRelative } from '../utils/format';
 import { SpringPressable } from './Motion';
-import { PlatformBadge } from './PlatformBadge';
-
-const PLATFORM_ICON: Record<Platform, keyof typeof Ionicons.glyphMap> = {
-  xiaohongshu: 'heart',
-  wechat: 'chatbubbles',
-  x: 'at',
-  web: 'globe-outline',
-};
 
 export function StatusPill({ status, label }: { status: keyof typeof statusMeta; label?: string }) {
   const meta = statusMeta[status] ?? statusMeta.ready;
   return (
-    <View style={[styles.statusPill, { backgroundColor: meta.softColor, borderColor: `${meta.color}40` }]}>
+    <View style={[styles.statusPill, { backgroundColor: meta.softColor }]}>
       <Text style={[styles.statusText, { color: meta.color }]}>{label ?? meta.label}</Text>
     </View>
   );
 }
 
+/** Physical vermilion paper clamp echoing the app icon, resting on top of each folio leaf. */
+function CoralClamp() {
+  return (
+    <View style={styles.clampShadow} pointerEvents="none">
+      <View style={styles.clampInner}>
+        <View style={styles.clampTopRim} />
+        <View style={styles.clampHighlight} />
+      </View>
+    </View>
+  );
+}
+
+type ClipCardClip = ClipSummary & { key_points?: string[] };
+
 interface ClipCardProps {
-  clip: ClipSummary;
+  clip: ClipCardClip;
   variant?: 'list' | 'feature';
   queueLabel?: string;
+  keyPoints?: string[];
   onPress?: () => void;
   onLongPress?: () => void;
 }
 
-export function ClipCard({ clip, variant = 'list', queueLabel, onPress, onLongPress }: ClipCardProps) {
+export function ClipCard({
+  clip,
+  variant = 'list',
+  queueLabel,
+  keyPoints,
+  onPress,
+  onLongPress,
+}: ClipCardProps) {
   const { config } = useSettings();
   const cover = mediaUrl(config, clip.cover_media_url);
   const meta = platformMeta[clip.platform];
-  const tagList = clip.tags.slice(0, variant === 'feature' ? 4 : 3);
+  const tagList = clip.tags.slice(0, variant === 'feature' ? 3 : 3);
   const hasStatusBadge = clip.status !== 'ready';
+  const points = (keyPoints ?? clip.key_points ?? []).slice(0, 2);
+  const compactQueue = queueLabel ? queueLabel.replace(/\s*\/\s*/g, '/') : undefined;
+  const sourceLine = clip.author ? `${meta.label} · ${clip.author}` : meta.label;
 
   if (variant === 'feature') {
+    const summaryFallback =
+      clip.ai_status === 'pending'
+        ? 'AI 正在提炼核心要点…'
+        : '还没有摘要，点开查看存档正文。';
+
     return (
       <SpringPressable
         onPress={onPress}
         onLongPress={onLongPress}
-        scaleTo={0.986}
-        contentStyle={styles.feature}
+        scaleTo={0.988}
+        contentStyle={styles.featureOuter}
       >
-        <View style={styles.featureCover}>
+        <View style={styles.featureCard}>
           {cover ? (
             <>
-              <Image source={{ uri: cover }} style={styles.featureImage} resizeMode="cover" />
-              <View style={styles.coverScrimTop} />
-              <View style={styles.coverScrimBottom} />
+              <View style={styles.featureCoverPad}>
+                <View style={styles.featureCoverFrame}>
+                  <Image source={{ uri: cover }} style={styles.featureImage} resizeMode="cover" />
+                </View>
+              </View>
+
+              <View style={styles.featureBody}>
+                <View style={styles.metaRow}>
+                  <View style={styles.metaLeft}>
+                    <View style={[styles.metaDot, { backgroundColor: meta.color }]} />
+                    <Text style={styles.metaSource} numberOfLines={1}>
+                      {sourceLine}
+                    </Text>
+                    {hasStatusBadge ? <StatusPill status={clip.status} /> : null}
+                  </View>
+                  {compactQueue ? <Text style={styles.queueMono}>{compactQueue}</Text> : null}
+                </View>
+
+                <Text style={styles.featureTitle} numberOfLines={3}>
+                  {clip.title || '未命名剪藏'}
+                </Text>
+
+                <Text style={styles.featureSummary} numberOfLines={4}>
+                  {clip.summary || summaryFallback}
+                </Text>
+
+                <View style={styles.featureFooter}>
+                  <View style={styles.footerTags}>
+                    {tagList.length ? (
+                      tagList.map((tag) => (
+                        <Text key={tag} style={styles.footerTagText} numberOfLines={1}>
+                          #{tag}
+                        </Text>
+                      ))
+                    ) : (
+                      <Text style={styles.footerTagText}>{formatRelative(clip.created_at)}</Text>
+                    )}
+                  </View>
+                  <Text style={styles.expandAction}>展开全文</Text>
+                </View>
+              </View>
             </>
           ) : (
-            <View style={styles.coverPlaceholder}>
-              <View style={[styles.placeholderGlow, { backgroundColor: meta.softColor }]} />
-              <View style={styles.placeholderIconRing}>
-                <Ionicons name={PLATFORM_ICON[clip.platform]} size={28} color={meta.color} />
+            <View style={styles.excerptBody}>
+              <View style={styles.metaRow}>
+                <View style={styles.metaLeft}>
+                  <View style={[styles.metaDot, { backgroundColor: meta.color }]} />
+                  <Text style={styles.metaSource} numberOfLines={1}>
+                    {sourceLine}
+                  </Text>
+                  {hasStatusBadge ? <StatusPill status={clip.status} /> : null}
+                </View>
+                <Text style={styles.queueMono}>
+                  {compactQueue ? `纯文摘录 ${compactQueue}` : '纯文摘录'}
+                </Text>
               </View>
-              <Text style={styles.coverPlaceholderText}>{meta.label} · 文本剪藏</Text>
+
+              <View style={styles.excerptMain}>
+                <Text style={styles.excerptTitle} numberOfLines={3}>
+                  {clip.title || '未命名剪藏'}
+                </Text>
+
+                <View style={styles.excerptRule} />
+
+                <Text style={styles.excerptQuote} numberOfLines={points.length > 0 ? 4 : 6}>
+                  {clip.summary ? `「${clip.summary}」` : summaryFallback}
+                </Text>
+
+                {points.length ? (
+                  <View style={styles.excerptPoints}>
+                    {points.map((pt, idx) => (
+                      <View key={`${idx}-${pt.slice(0, 12)}`} style={styles.excerptPointRow}>
+                        <Text style={styles.excerptPointDash}>—</Text>
+                        <Text style={styles.excerptPointText} numberOfLines={2}>
+                          {pt}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.excerptFooter}>
+                <View style={styles.footerTags}>
+                  {tagList.length ? (
+                    tagList.map((tag) => (
+                      <Text key={tag} style={styles.footerTagText} numberOfLines={1}>
+                        #{tag}
+                      </Text>
+                    ))
+                  ) : (
+                    <Text style={styles.footerTagText}>{formatRelative(clip.created_at)}</Text>
+                  )}
+                </View>
+                <Text style={styles.expandAction}>展开正文</Text>
+              </View>
             </View>
           )}
-
-          <View style={styles.coverOverlayTop}>
-            <View style={styles.overlayLeft}>
-              <PlatformBadge platform={clip.platform} size="md" glass />
-              {hasStatusBadge ? <StatusPill status={clip.status} /> : null}
-            </View>
-            {queueLabel ? (
-              <View style={styles.queuePill}>
-                <Text style={styles.queuePillText}>{queueLabel}</Text>
-              </View>
-            ) : null}
-          </View>
         </View>
 
-        <View style={styles.featureBody}>
-          <Text style={styles.featureTitle} numberOfLines={3}>
-            {clip.title || '未命名剪藏'}
-          </Text>
-
-          {clip.author ? (
-            <Text style={styles.author} numberOfLines={1}>
-              @{clip.author}
-            </Text>
-          ) : null}
-
-          <Text style={styles.featureSummary} numberOfLines={4}>
-            {clip.summary || (clip.ai_status === 'pending' ? 'AI 正在提炼核心要点…' : '还没有摘要，点开查看存档正文。')}
-          </Text>
-
-          {tagList.length ? (
-            <View style={styles.tagRow}>
-              {tagList.map((tag) => (
-                <View key={tag} style={styles.tagChip}>
-                  <Text style={styles.tagText}>#{tag}</Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
-
-          <View style={styles.featureFooter}>
-            <Text style={styles.timeText}>{formatRelative(clip.created_at)}</Text>
-            <View style={styles.readMoreHint}>
-              <Text style={styles.readMoreText}>阅读详情</Text>
-              <Ionicons name="chevron-forward" size={13} color={colors.muted} />
-            </View>
-          </View>
-        </View>
+        <CoralClamp />
       </SpringPressable>
     );
   }
@@ -119,25 +181,16 @@ export function ClipCard({ clip, variant = 'list', queueLabel, onPress, onLongPr
     <SpringPressable
       onPress={onPress}
       onLongPress={onLongPress}
-      scaleTo={0.978}
+      scaleTo={0.985}
       contentStyle={styles.row}
     >
-      <View style={styles.thumb}>
-        {cover ? (
-          <Image source={{ uri: cover }} style={styles.thumbImage} resizeMode="cover" />
-        ) : (
-          <View style={[styles.thumbFallback, { backgroundColor: meta.softColor }]}>
-            <Ionicons name={PLATFORM_ICON[clip.platform]} size={21} color={meta.color} />
-          </View>
-        )}
-      </View>
-
       <View style={styles.rowBody}>
-        <View style={styles.badgeRow}>
-          <PlatformBadge platform={clip.platform} muted />
+        <View style={styles.rowMeta}>
+          <View style={[styles.rowDot, { backgroundColor: meta.color }]} />
+          <Text style={styles.rowMetaText}>{meta.label}</Text>
+          <Text style={styles.rowMetaSep}>·</Text>
+          <Text style={styles.rowMetaText}>{formatRelative(clip.created_at)}</Text>
           {hasStatusBadge ? <StatusPill status={clip.status} /> : null}
-          <View style={styles.grow} />
-          <Text style={styles.timeText}>{formatRelative(clip.created_at)}</Text>
         </View>
 
         <Text style={styles.rowTitle} numberOfLines={2}>
@@ -151,252 +204,299 @@ export function ClipCard({ clip, variant = 'list', queueLabel, onPress, onLongPr
         ) : null}
 
         {tagList.length ? (
-          <View style={styles.tagRow}>
+          <View style={styles.rowTags}>
             {tagList.map((tag) => (
-              <View key={tag} style={styles.tagChipQuiet}>
-                <Text style={styles.tagTextQuiet}>#{tag}</Text>
-              </View>
+              <Text key={tag} style={styles.rowTagText} numberOfLines={1}>
+                #{tag}
+              </Text>
             ))}
           </View>
         ) : null}
       </View>
+
+      {cover ? (
+        <Image source={{ uri: cover }} style={styles.thumbImage} resizeMode="cover" />
+      ) : null}
     </SpringPressable>
   );
 }
 
 const styles = StyleSheet.create({
-  grow: { flex: 1 },
-
-  feature: {
-    backgroundColor: colors.surfaceElevated,
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderTopColor: colors.rimTop,
-    overflow: 'hidden',
-    ...elevation.hero,
+  featureOuter: {
+    paddingTop: 6,
+    position: 'relative',
   },
-  featureCover: {
-    width: '100%',
-    aspectRatio: 16 / 9.2,
-    backgroundColor: colors.surfaceAlt,
-    justifyContent: 'center',
-    alignItems: 'center',
+  featureCard: {
+    backgroundColor: colors.sheet,
+    borderRadius: 14,
+    ...elevation.card,
+  },
+  clampShadow: {
+    position: 'absolute',
+    top: 0,
+    alignSelf: 'center',
+    zIndex: 5,
+    width: 44,
+    height: 22,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    backgroundColor: colors.accent,
+    ...RNPlatform.select({
+      ios: {
+        shadowColor: colors.accentDeep,
+        shadowOpacity: 0.28,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      default: {
+        elevation: 4,
+        shadowColor: colors.accentDeep,
+      },
+    }),
+  },
+  clampInner: {
+    ...StyleSheet.absoluteFillObject,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
     overflow: 'hidden',
+  },
+  clampTopRim: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.32)',
+  },
+  clampHighlight: {
+    position: 'absolute',
+    left: 10,
+    right: 10,
+    bottom: 5,
+    height: 2,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(255, 255, 255, 0.30)',
+  },
+
+  featureCoverPad: {
+    paddingHorizontal: 14,
+    paddingTop: 22,
+  },
+  featureCoverFrame: {
+    borderRadius: 8,
+    overflow: 'hidden',
+    aspectRatio: 4 / 2.65,
+    backgroundColor: colors.surface,
   },
   featureImage: {
     width: '100%',
     height: '100%',
   },
-  coverScrimTop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 64,
-    backgroundColor: 'rgba(9, 11, 15, 0.28)',
+
+  featureBody: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 18,
+    gap: 10,
   },
-  coverScrimBottom: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 44,
-    backgroundColor: 'rgba(23, 29, 41, 0.36)',
-  },
-  coverOverlayTop: {
-    position: 'absolute',
-    top: spacing.md,
-    left: spacing.md,
-    right: spacing.md,
+  metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: spacing.sm,
+    gap: 8,
   },
-  overlayLeft: {
+  metaLeft: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.xs,
+    gap: 6,
   },
-  queuePill: {
-    backgroundColor: 'rgba(9, 11, 15, 0.72)',
-    borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth * 2,
-    borderColor: colors.borderStrong,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  metaDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    flexShrink: 0,
   },
-  queuePillText: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  coverPlaceholder: {
-    width: '100%',
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.sm,
-    backgroundColor: '#131824',
-  },
-  placeholderGlow: {
-    position: 'absolute',
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    opacity: 0.55,
-  },
-  placeholderIconRing: {
-    width: 58,
-    height: 58,
-    borderRadius: 20,
-    backgroundColor: colors.glassStrong,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  coverPlaceholderText: {
+  metaSource: {
     color: colors.muted,
-    fontSize: 11.5,
-    fontWeight: '600',
-    letterSpacing: 0.4,
+    fontSize: 12,
+    flexShrink: 1,
   },
-  featureBody: {
-    padding: spacing.xl,
-    gap: 10,
+  queueMono: {
+    color: colors.muted,
+    fontFamily: fonts.mono,
+    fontSize: 11.5,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,
   },
   featureTitle: {
+    fontFamily: fonts.serif,
     color: colors.text,
-    fontSize: 20,
-    lineHeight: 28,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-  },
-  author: {
-    color: colors.muted,
-    fontSize: 12.5,
-    fontWeight: '500',
-    marginTop: -4,
+    fontSize: 19,
+    lineHeight: 27,
+    fontWeight: '700',
   },
   featureSummary: {
     color: colors.textSecondary,
-    fontSize: 14.5,
-    lineHeight: 23,
+    fontSize: 14,
+    lineHeight: 24,
   },
   featureFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: spacing.xs,
-    paddingTop: spacing.md,
+    gap: 10,
+    marginTop: 2,
+    paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.borderSubtle,
   },
-  readMoreHint: {
+  footerTags: {
+    flex: 1,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
+    flexWrap: 'wrap',
+    gap: 10,
   },
-  readMoreText: {
+  footerTagText: {
     color: colors.muted,
     fontSize: 12,
+  },
+  expandAction: {
+    color: colors.accent,
+    fontSize: 12,
     fontWeight: '600',
+    flexShrink: 0,
+  },
+
+  excerptBody: {
+    paddingHorizontal: 22,
+    paddingTop: 26,
+    paddingBottom: 20,
+    minHeight: 360,
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  excerptMain: {
+    gap: 14,
+    paddingVertical: 4,
+  },
+  excerptTitle: {
+    fontFamily: fonts.serif,
+    color: colors.text,
+    fontSize: 22.5,
+    lineHeight: 31.5,
+    fontWeight: '700',
+  },
+  excerptRule: {
+    width: 28,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: colors.accent,
+  },
+  excerptQuote: {
+    fontFamily: fonts.serif,
+    color: colors.textSecondary,
+    fontSize: 15,
+    lineHeight: 27,
+  },
+  excerptPoints: {
+    gap: 6,
+    paddingTop: 4,
+  },
+  excerptPointRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  excerptPointDash: {
+    color: colors.accent,
+    fontFamily: fonts.mono,
+    fontSize: 12.5,
+    lineHeight: 19.5,
+  },
+  excerptPointText: {
+    flex: 1,
+    color: colors.muted,
+    fontSize: 12.5,
+    lineHeight: 19.5,
+  },
+  excerptFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderSubtle,
   },
 
   row: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 14,
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    padding: 14,
-  },
-  thumb: {
-    width: 82,
-    height: 82,
-    borderRadius: radius.md,
-    overflow: 'hidden',
-    backgroundColor: colors.surfaceAlt,
-    borderWidth: StyleSheet.hairlineWidth * 2,
-    borderColor: colors.border,
-  },
-  thumbImage: {
-    width: '100%',
-    height: '100%',
-  },
-  thumbFallback: {
-    width: '100%',
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 15,
   },
   rowBody: {
     flex: 1,
     gap: 6,
-    justifyContent: 'center',
+  },
+  rowMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  rowDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+  },
+  rowMetaText: {
+    color: colors.muted,
+    fontSize: 12,
+  },
+  rowMetaSep: {
+    color: colors.faint,
+    fontSize: 12,
   },
   rowTitle: {
+    fontFamily: fonts.serif,
     color: colors.text,
     fontSize: 15.5,
     lineHeight: 22,
     fontWeight: '700',
-    letterSpacing: -0.1,
   },
   rowSummary: {
-    color: colors.muted,
+    color: colors.textSecondary,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 21,
+  },
+  rowTags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 1,
+  },
+  rowTagText: {
+    color: colors.muted,
+    fontSize: 12,
+  },
+  thumbImage: {
+    width: 68,
+    height: 68,
+    borderRadius: 8,
+    marginTop: 4,
+    backgroundColor: colors.surface,
+    flexShrink: 0,
   },
 
-  badgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  timeText: {
-    color: colors.faint,
-    fontSize: 11.5,
-  },
   statusPill: {
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth * 2,
     paddingHorizontal: 7,
     paddingVertical: 2,
   },
   statusText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  tagRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginTop: 2,
-  },
-  tagChip: {
-    backgroundColor: colors.glass,
-    borderRadius: radius.pill,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-  },
-  tagText: {
-    color: colors.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '500',
-  },
-  tagChipQuiet: {
-    backgroundColor: colors.glass,
-    borderRadius: radius.sm,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-  },
-  tagTextQuiet: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '500',
+    fontSize: 10.5,
+    fontWeight: '600',
   },
 });
