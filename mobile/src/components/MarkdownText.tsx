@@ -81,8 +81,8 @@ interface MarkdownTextProps {
 }
 
 /**
- * Tiny markdown renderer (headings / bullets / quotes / dividers).
- * Keeps the app dependency-free while making archived articles readable.
+ * Editorial markdown renderer (headings / bullets / quotes / dividers).
+ * Optimized for calm long-form dark-mode reading on the obsidian canvas.
  */
 export function MarkdownText({ content, selectable = false }: MarkdownTextProps) {
   const blocks = parseBlocks(content);
@@ -143,38 +143,41 @@ export function MarkdownText({ content, selectable = false }: MarkdownTextProps)
 
 const styles = StyleSheet.create({
   container: {
-    gap: spacing.sm,
+    gap: 12,
   },
   h1: {
     color: colors.text,
     fontSize: 21,
     lineHeight: 30,
     fontWeight: '800',
-    marginTop: spacing.sm,
+    letterSpacing: -0.2,
+    marginTop: spacing.md,
   },
   h2: {
     color: colors.text,
     fontSize: 18,
-    lineHeight: 26,
+    lineHeight: 27,
     fontWeight: '700',
-    marginTop: spacing.sm,
+    letterSpacing: -0.1,
+    marginTop: spacing.md,
   },
   h3: {
-    color: colors.textSecondary,
-    fontSize: 15,
-    lineHeight: 23,
+    color: colors.text,
+    fontSize: 15.5,
+    lineHeight: 24,
     fontWeight: '700',
     marginTop: spacing.xs,
   },
   paragraph: {
     color: colors.textSecondary,
-    fontSize: 14,
-    lineHeight: 24,
+    fontSize: 15.5,
+    lineHeight: 27,
+    letterSpacing: 0.15,
   },
   bulletRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: spacing.sm,
+    gap: 10,
     paddingLeft: spacing.xs,
   },
   bulletDot: {
@@ -182,30 +185,30 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 3,
     backgroundColor: colors.accent,
-    marginTop: 10,
+    marginTop: 11,
   },
   bulletText: {
     flex: 1,
     color: colors.textSecondary,
-    fontSize: 14,
-    lineHeight: 24,
+    fontSize: 15,
+    lineHeight: 26,
   },
   quote: {
-    borderLeftWidth: 3,
+    borderLeftWidth: 2.5,
     borderLeftColor: colors.accent,
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.surface,
     borderRadius: radius.sm,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
   },
   quoteText: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 21,
+    fontSize: 14,
+    lineHeight: 23,
   },
   divider: {
-    height: 1,
-    backgroundColor: colors.border,
-    marginVertical: spacing.sm,
+    height: StyleSheet.hairlineWidth * 2,
+    backgroundColor: colors.borderSubtle,
+    marginVertical: spacing.md,
   },
 });

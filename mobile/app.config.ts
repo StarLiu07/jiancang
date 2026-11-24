@@ -12,20 +12,31 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: '剪藏',
   slug: 'jiancang',
-  version: '0.1.0',
+  version: '0.2.0',
   orientation: 'portrait',
   scheme: 'jiancang',
-  backgroundColor: '#0E1014',
+  icon: './assets/icon.png',
+  backgroundColor: '#090B0F',
+  splash: {
+    image: './assets/splash-icon.png',
+    resizeMode: 'contain',
+    backgroundColor: '#0E1014',
+  },
   androidStatusBar: {
     barStyle: 'light-content',
   },
   androidNavigationBar: {
-    backgroundColor: '#0E1014',
+    backgroundColor: '#0D1017',
     barStyle: 'light-content',
   },
   android: {
     package: 'com.sheldon.jiancang',
-    backgroundColor: '#0E1014',
+    backgroundColor: '#090B0F',
+    adaptiveIcon: {
+      foregroundImage: './assets/adaptive-icon.png',
+      monochromeImage: './assets/monochrome-icon.png',
+      backgroundColor: '#0E1014',
+    },
   },
   ios: {
     bundleIdentifier: 'com.sheldon.jiancang',
@@ -33,7 +44,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   plugins: [
     'expo-router',
-    ['expo-notifications', { color: '#FF6B4A' }],
+    [
+      'expo-notifications',
+      {
+        icon: './assets/notification-icon.png',
+        color: '#FF6B4A',
+      },
+    ],
     [
       'expo-share-intent',
       {

@@ -3,6 +3,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -14,12 +15,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { api, pickErrorMessage } from '../../src/api/client';
-import { ClipCard } from '../../src/components/ClipCard';
 import { ClipboardBanner } from '../../src/components/ClipboardBanner';
+import { FadeSlideIn, MOTION, SkeletonHeroCard, SpringPressable } from '../../src/components/Motion';
+import { ReviewDeck, type ReviewDeckHandle } from '../../src/components/ReviewDeck';
 import { useToast } from '../../src/components/Toast';
 import { useClipboardLink } from '../../src/hooks/useClipboardLink';
 import { useSettings } from '../../src/store/settings';
-import { colors, radius, spacing } from '../../src/theme';
+import { colors, elevation, radius, spacing } from '../../src/theme';
 import type { ClipDetail, ReviewActionType } from '../../src/types';
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -35,28 +37,30 @@ const ACTION_LABEL: Record<ReviewActionType, string> = {
   delete: '已删除',
 };
 
-interface ActionButtonProps {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  color: string;
-  disabled?: boolean;
-  onPress: () => void;
-}
+function ProgressSegment({ done, current }: { done: boolean; current: boolean }) {
+  const fill = useRef(new Animated.Value(done ? 1 : 0)).current;
 
-function ActionButton({ icon, label, color, disabled, onPress }: ActionButtonProps) {
+  useEffect(() => {
+    Animated.timing(fill, {
+      toValue: done ? 1 : 0,
+      duration: 280,
+      easing: MOTION.easeOut,
+      useNativeDriver: true,
+    }).start();
+  }, [done, fill]);
+
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      style={({ pressed }) => [
-        styles.actionButton,
-        { borderColor: `${color}3D`, backgroundColor: `${color}14` },
-        (pressed || disabled) && styles.actionButtonMuted,
-      ]}
-    >
-      <Ionicons name={icon} size={19} color={color} />
-      <Text style={[styles.actionLabel, { color }]}>{label}</Text>
-    </Pressable>
+    <View style={[styles.segmentBar, current && styles.segmentBarCurrent]}>
+      <Animated.View
+        style={[
+          styles.segmentBarFill,
+          {
+            opacity: fill,
+            transform: [{ scaleX: fill }],
+          },
+        ]}
+      />
+    </View>
   );
 }
 
@@ -74,18 +78,37 @@ export default function ReviewTodayScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [acting, setActing] = useState(false);
   const [capturing, setCapturing] = useState(false);
+  const [deckDragging, setDeckDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const requestRef = useRef(0);
   const loadedRef = useRef(false);
+  const deckRef = useRef<ReviewDeckHandle>(null);
+  const refreshSpin = useRef(new Animated.Value(0)).current;
+  const doneBadgeScale = useRef(new Animated.Value(0.7)).current;
+
   const { link, dismiss, refresh: refreshClipboard } = useClipboardLink(ready);
+
+  const spinRefreshIcon = useCallback(() => {
+    refreshSpin.setValue(0);
+    Animated.timing(refreshSpin, {
+      toValue: 1,
+      duration: 460,
+      easing: MOTION.easeOut,
+      useNativeDriver: true,
+    }).start();
+  }, [refreshSpin]);
 
   const load = useCallback(
     async (mode: 'initial' | 'refresh' = 'initial') => {
       if (!ready) return;
       const requestId = ++requestRef.current;
-      if (mode === 'refresh') setRefreshing(true);
-      else setLoading(true);
+      if (mode === 'refresh') {
+        setRefreshing(true);
+        spinRefreshIcon();
+      } else {
+        setLoading(true);
+      }
       setError(null);
       try {
         const data = await api.reviewToday({ baseUrl: config.baseUrl, token: config.token }, 5);
@@ -106,7 +129,7 @@ export default function ReviewTodayScreen() {
         }
       }
     },
-    [ready, config.baseUrl, config.token],
+    [ready, config.baseUrl, config.token, spinRefreshIcon],
   );
 
   const loadRef = useRef(load);
@@ -129,6 +152,13 @@ export default function ReviewTodayScreen() {
   const finished = !loading && !error && index >= items.length;
   const percent = dailyTarget > 0 ? Math.min(100, Math.round((reviewedToday / dailyTarget) * 100)) : 0;
   const progressWidth = `${percent}%` as DimensionValue;
+  const useSegments = dailyTarget > 0 && dailyTarget <= 10;
+
+  useEffect(() => {
+    if (!finished) return;
+    doneBadgeScale.setValue(0.68);
+    Animated.spring(doneBadgeScale, { toValue: 1, ...MOTION.springPop }).start();
+  }, [finished, doneBadgeScale]);
 
   const captureClipboard = async () => {
     if (!link || capturing) return;
@@ -145,33 +175,45 @@ export default function ReviewTodayScreen() {
     }
   };
 
-  const handleAction = async (action: ReviewActionType) => {
-    const clip = items[index];
-    if (!clip || acting) return;
+  const commitAction = useCallback(
+    async (action: ReviewActionType) => {
+      const clip = items[index];
+      if (!clip || acting) return;
 
-    const previousIndex = index;
-    const previousReviewed = reviewedToday;
+      const previousIndex = index;
+      const previousReviewed = reviewedToday;
 
-    setActing(true);
-    setIndex(previousIndex + 1);
-    setReviewedToday(previousReviewed + 1);
+      setActing(true);
+      setIndex(previousIndex + 1);
+      setReviewedToday(previousReviewed + 1);
 
-    try {
-      const result = await api.reviewAction(
-        { baseUrl: config.baseUrl, token: config.token },
-        clip.id,
-        { action },
-      );
-      setReviewedToday(result.reviewed_today);
-      setDailyTarget(result.daily_target || dailyTarget);
-      setTotalActive((value) => Math.max(0, value - (action === 'snooze' ? 0 : 1)));
-      show(ACTION_LABEL[action], 'success');
-    } catch (err) {
-      setIndex(previousIndex);
-      setReviewedToday(previousReviewed);
-      show(pickErrorMessage(err), 'error');
-    } finally {
-      setActing(false);
+      try {
+        const result = await api.reviewAction(
+          { baseUrl: config.baseUrl, token: config.token },
+          clip.id,
+          { action },
+        );
+        setReviewedToday(result.reviewed_today);
+        setDailyTarget(result.daily_target || dailyTarget);
+        setTotalActive((value) => Math.max(0, value - (action === 'snooze' ? 0 : 1)));
+        show(ACTION_LABEL[action], 'success');
+      } catch (err) {
+        setIndex(previousIndex);
+        setReviewedToday(previousReviewed);
+        show(pickErrorMessage(err), 'error');
+      } finally {
+        setActing(false);
+      }
+    },
+    [items, index, acting, reviewedToday, config.baseUrl, config.token, dailyTarget, show],
+  );
+
+  const handleButtonAction = (action: ReviewActionType) => {
+    if (acting) return;
+    if (deckRef.current) {
+      deckRef.current.triggerAction(action);
+    } else {
+      void commitAction(action);
     }
   };
 
@@ -179,9 +221,15 @@ export default function ReviewTodayScreen() {
     router.push({ pathname: '/clip/[id]', params: { id } });
   };
 
+  const spinInterpolate = refreshSpin.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView
+        scrollEnabled={!deckDragging}
         contentContainerStyle={styles.content}
         refreshControl={
           <RefreshControl
@@ -189,37 +237,54 @@ export default function ReviewTodayScreen() {
             onRefresh={() => void load('refresh')}
             tintColor={colors.accent}
             colors={[colors.accent]}
-            progressBackgroundColor={colors.surface}
+            progressBackgroundColor={colors.surfaceElevated}
           />
         }
       >
         <View style={styles.headerRow}>
           <View style={styles.headerText}>
+            <Text style={styles.eyebrow}>{todayLabel()}</Text>
             <Text style={styles.title}>今日回顾</Text>
-            <Text style={styles.subtitle}>{todayLabel()}</Text>
           </View>
-          <Pressable
+          <SpringPressable
             onPress={() => void load('refresh')}
-            style={({ pressed }) => [styles.refreshButton, pressed && styles.pressed]}
+            scaleTo={0.9}
             hitSlop={8}
+            contentStyle={styles.refreshButton}
+            accessibilityLabel="刷新今日回顾"
           >
-            <Ionicons name="refresh" size={18} color={colors.textSecondary} />
-          </Pressable>
+            <Animated.View style={{ transform: [{ rotate: spinInterpolate }] }}>
+              <Ionicons name="refresh" size={17} color={colors.textSecondary} />
+            </Animated.View>
+          </SpringPressable>
         </View>
 
-        <View style={styles.progressCard}>
+        <View style={styles.progressSection}>
           <View style={styles.progressTopRow}>
             <Text style={styles.progressLabel}>
-              今日已回顾 <Text style={styles.progressStrong}>{reviewedToday}</Text>
+              已回顾 <Text style={styles.progressStrong}>{reviewedToday}</Text>
               <Text style={styles.progressMuted}> / {dailyTarget}</Text>
             </Text>
             <Text style={styles.progressHint}>
-              {totalActive > 0 ? `在库 ${totalActive} 条` : '收藏库还是空的'}
+              {totalActive > 0 ? `收藏库 ${totalActive} 条` : '收藏库还是空的'}
             </Text>
           </View>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: progressWidth }]} />
-          </View>
+
+          {useSegments ? (
+            <View style={styles.segmentTrack}>
+              {Array.from({ length: dailyTarget }).map((_, idx) => (
+                <ProgressSegment
+                  key={idx}
+                  done={idx < reviewedToday}
+                  current={idx === reviewedToday && !finished}
+                />
+              ))}
+            </View>
+          ) : (
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: progressWidth }]} />
+            </View>
+          )}
         </View>
 
         {link ? (
@@ -232,95 +297,116 @@ export default function ReviewTodayScreen() {
         ) : null}
 
         {error ? (
-          <View style={styles.errorCard}>
-            <Ionicons name="cloud-offline-outline" size={20} color={colors.danger} />
-            <View style={styles.errorBody}>
-              <Text style={styles.errorTitle}>没能连上剪藏服务</Text>
-              <Text style={styles.errorText}>{error}</Text>
+          <FadeSlideIn distance={8}>
+            <View style={styles.errorCard}>
+              <Ionicons name="cloud-offline-outline" size={20} color={colors.danger} />
+              <View style={styles.errorBody}>
+                <Text style={styles.errorTitle}>没能连上剪藏服务</Text>
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+              <Pressable onPress={() => void load('initial')} style={styles.errorRetry} hitSlop={6}>
+                <Text style={styles.errorRetryText}>重试</Text>
+              </Pressable>
             </View>
-            <Pressable onPress={() => void load('initial')} style={styles.errorRetry} hitSlop={6}>
-              <Text style={styles.errorRetryText}>重试</Text>
-            </Pressable>
-          </View>
+          </FadeSlideIn>
         ) : null}
 
         {loading && !refreshing ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator color={colors.accent} />
-            <Text style={styles.loadingText}>正在准备今天的回顾…</Text>
-          </View>
+          <SkeletonHeroCard />
         ) : finished ? (
-          <View style={styles.doneCard}>
-            <View style={styles.doneIcon}>
-              <Ionicons name="checkmark-done" size={30} color={colors.success} />
-            </View>
-            <Text style={styles.doneTitle}>
-              {reviewedToday >= dailyTarget ? '今天的回顾完成啦' : '暂时没有待回顾的剪藏'}
-            </Text>
-            <Text style={styles.doneText}>
-              {reviewedToday >= dailyTarget
-                ? `已完成 ${reviewedToday} / ${dailyTarget}，让收藏真正沉淀下来。`
-                : '可以去收藏库挑几条，或者等下一次提醒。'}
-            </Text>
-            <View style={styles.doneActions}>
-              <Pressable
-                onPress={() => void load('initial')}
-                style={({ pressed }) => [styles.donePrimary, pressed && styles.pressed]}
-              >
-                <Ionicons name="refresh" size={16} color="#1A0D08" />
-                <Text style={styles.donePrimaryText}>再拉一批</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => router.push('/library')}
-                style={({ pressed }) => [styles.doneSecondary, pressed && styles.pressed]}
-              >
-                <Ionicons name="albums-outline" size={16} color={colors.textSecondary} />
-                <Text style={styles.doneSecondaryText}>去收藏库</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : current ? (
-          <View style={styles.reviewBlock}>
-            <View style={styles.queueRow}>
-              <Text style={styles.queueText}>
-                第 {Math.min(index + 1, items.length)} / {items.length} 张
+          <FadeSlideIn distance={14} duration={300}>
+            <View style={styles.doneCard}>
+              <Animated.View style={[styles.doneIcon, { transform: [{ scale: doneBadgeScale }] }]}>
+                <Ionicons name="checkmark-done" size={28} color={colors.success} />
+              </Animated.View>
+              <Text style={styles.doneTitle}>
+                {reviewedToday >= dailyTarget ? '今天的回顾完成啦' : '暂时没有待回顾的剪藏'}
               </Text>
-              {remaining > 0 ? <Text style={styles.queueHint}>接下来还有 {remaining} 张</Text> : null}
+              <Text style={styles.doneText}>
+                {reviewedToday >= dailyTarget
+                  ? `已完成 ${reviewedToday} / ${dailyTarget}，让收藏真正沉淀下来。`
+                  : '可以去收藏库挑几条，或者等下一次提醒。'}
+              </Text>
+              <View style={styles.doneActions}>
+                <SpringPressable
+                  onPress={() => void load('initial')}
+                  scaleTo={0.95}
+                  contentStyle={styles.donePrimary}
+                >
+                  <Ionicons name="refresh" size={16} color={colors.onAccent} />
+                  <Text style={styles.donePrimaryText}>再拉一批</Text>
+                </SpringPressable>
+                <SpringPressable
+                  onPress={() => router.push('/library')}
+                  scaleTo={0.95}
+                  contentStyle={styles.doneSecondary}
+                >
+                  <Ionicons name="albums-outline" size={16} color={colors.textSecondary} />
+                  <Text style={styles.doneSecondaryText}>去收藏库</Text>
+                </SpringPressable>
+              </View>
             </View>
-
-            <ClipCard clip={current} variant="feature" onPress={() => openDetail(current.id)} />
+          </FadeSlideIn>
+        ) : current ? (
+          <FadeSlideIn distance={12} duration={260} style={styles.reviewBlock}>
+            <ReviewDeck
+              ref={deckRef}
+              clip={current}
+              queueLabel={`${Math.min(index + 1, items.length)} / ${items.length}`}
+              remaining={remaining}
+              disabled={acting}
+              onOpenDetail={() => openDetail(current.id)}
+              onAction={(action) => void commitAction(action)}
+              onDraggingChange={setDeckDragging}
+            />
 
             <View style={styles.actions}>
-              <ActionButton
-                icon="time-outline"
-                label="以后再看"
-                color={colors.warning}
+              <SpringPressable
+                onPress={() => handleButtonAction('snooze')}
                 disabled={acting}
-                onPress={() => void handleAction('snooze')}
-              />
-              <ActionButton
-                icon="checkmark-circle-outline"
-                label="已消化"
-                color={colors.success}
+                scaleTo={0.95}
+                style={styles.secondaryActionFlex}
+                contentStyle={[styles.secondaryAction, acting && styles.actionMuted]}
+              >
+                <Ionicons name="time-outline" size={18} color={colors.textSecondary} />
+                <Text style={styles.secondaryActionLabel}>以后再看</Text>
+              </SpringPressable>
+
+              <SpringPressable
+                onPress={() => handleButtonAction('archive')}
                 disabled={acting}
-                onPress={() => void handleAction('archive')}
-              />
-              <ActionButton
-                icon="trash-outline"
-                label="删除"
-                color={colors.danger}
+                scaleTo={0.95}
+                style={styles.primaryActionFlex}
+                contentStyle={[styles.primaryAction, acting && styles.actionMuted]}
+              >
+                <Ionicons name="checkmark-circle" size={19} color={colors.onAccent} />
+                <Text style={styles.primaryActionLabel}>已消化</Text>
+              </SpringPressable>
+
+              <SpringPressable
+                onPress={() => handleButtonAction('delete')}
                 disabled={acting}
-                onPress={() => void handleAction('delete')}
-              />
+                scaleTo={0.92}
+                contentStyle={[styles.ghostDangerAction, acting && styles.actionMuted]}
+                accessibilityLabel="删除剪藏"
+              >
+                <Ionicons name="trash-outline" size={18} color={colors.muted} />
+              </SpringPressable>
             </View>
 
             {acting ? (
               <View style={styles.syncingRow}>
-                <ActivityIndicator size="small" color={colors.muted} />
-                <Text style={styles.syncingText}>正在同步到后端…</Text>
+                <ActivityIndicator size="small" color={colors.faint} />
+                <Text style={styles.syncingText}>正在同步…</Text>
               </View>
-            ) : null}
-          </View>
+            ) : (
+              <Text style={styles.remainingHint}>
+                {remaining > 0
+                  ? `右滑已消化 · 左滑以后再看 · 还有 ${remaining} 条`
+                  : '右滑已消化 · 左滑以后再看'}
+              </Text>
+            )}
+          </FadeSlideIn>
         ) : null}
       </ScrollView>
     </SafeAreaView>
@@ -333,7 +419,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   content: {
-    padding: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
     paddingBottom: spacing.xxl,
     gap: spacing.lg,
   },
@@ -346,16 +433,17 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 3,
   },
-  title: {
-    color: colors.text,
-    fontSize: 26,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  subtitle: {
+  eyebrow: {
     color: colors.muted,
     fontSize: 12,
-    letterSpacing: 0.4,
+    fontWeight: '600',
+    letterSpacing: 0.6,
+  },
+  title: {
+    color: colors.text,
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
   refreshButton: {
     width: 38,
@@ -363,62 +451,79 @@ const styles = StyleSheet.create({
     borderRadius: 19,
     backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSubtle,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pressed: {
-    opacity: 0.72,
-  },
-  progressCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    gap: spacing.sm,
+
+  progressSection: {
+    gap: 8,
+    marginTop: -4,
   },
   progressTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     justifyContent: 'space-between',
     gap: spacing.sm,
   },
   progressLabel: {
-    color: colors.textSecondary,
-    fontSize: 13,
+    color: colors.muted,
+    fontSize: 12.5,
+    fontWeight: '500',
   },
   progressStrong: {
     color: colors.accent,
     fontWeight: '800',
-    fontSize: 15,
+    fontSize: 14,
+    fontVariant: ['tabular-nums'],
   },
   progressMuted: {
-    color: colors.muted,
+    color: colors.faint,
+    fontVariant: ['tabular-nums'],
   },
   progressHint: {
     color: colors.faint,
-    fontSize: 11,
+    fontSize: 11.5,
+  },
+  segmentTrack: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  segmentBar: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.glassStrong,
+    overflow: 'hidden',
+  },
+  segmentBarCurrent: {
+    backgroundColor: colors.accentBorder,
+  },
+  segmentBarFill: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 2,
+    backgroundColor: colors.accent,
   },
   progressTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.surfaceAlt,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.glassStrong,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    borderRadius: 3,
+    borderRadius: 2,
     backgroundColor: colors.accent,
   },
+
   errorCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
     backgroundColor: colors.dangerSoft,
     borderWidth: 1,
-    borderColor: `${colors.danger}44`,
-    borderRadius: radius.md,
+    borderColor: `${colors.danger}40`,
+    borderRadius: radius.lg,
     padding: spacing.md,
   },
   errorBody: {
@@ -427,70 +532,86 @@ const styles = StyleSheet.create({
   },
   errorTitle: {
     color: colors.text,
-    fontSize: 13,
+    fontSize: 13.5,
     fontWeight: '700',
   },
   errorText: {
     color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
   },
   errorRetry: {
     paddingHorizontal: spacing.md,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: radius.pill,
     backgroundColor: colors.danger,
   },
   errorRetryText: {
-    color: '#1A0D08',
-    fontSize: 11,
+    color: colors.onAccent,
+    fontSize: 11.5,
     fontWeight: '800',
   },
-  loadingBox: {
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingVertical: 70,
-  },
-  loadingText: {
-    color: colors.muted,
-    fontSize: 12,
-  },
+
   reviewBlock: {
-    gap: spacing.md,
+    gap: spacing.lg,
   },
-  queueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  queueText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  queueHint: {
-    color: colors.faint,
-    fontSize: 11,
-  },
+
   actions: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    alignItems: 'center',
+    gap: 10,
   },
-  actionButton: {
+  secondaryActionFlex: {
     flex: 1,
+  },
+  secondaryAction: {
+    height: 52,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
+    gap: 7,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
-    borderRadius: radius.md,
-    paddingVertical: spacing.md,
+    borderColor: colors.border,
+    borderTopColor: colors.rimTop,
+    borderRadius: radius.lg,
   },
-  actionButtonMuted: {
-    opacity: 0.5,
-  },
-  actionLabel: {
-    fontSize: 12,
+  secondaryActionLabel: {
+    color: colors.textSecondary,
+    fontSize: 13.5,
     fontWeight: '700',
+  },
+  primaryActionFlex: {
+    flex: 1.45,
+  },
+  primaryAction: {
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    backgroundColor: colors.accent,
+    borderRadius: radius.lg,
+    ...elevation.accent,
+  },
+  primaryActionLabel: {
+    color: colors.onAccent,
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  ghostDangerAction: {
+    width: 52,
+    height: 52,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionMuted: {
+    opacity: 0.52,
   },
   syncingRow: {
     flexDirection: 'row',
@@ -500,71 +621,82 @@ const styles = StyleSheet.create({
   },
   syncingText: {
     color: colors.faint,
-    fontSize: 11,
+    fontSize: 11.5,
   },
+  remainingHint: {
+    color: colors.faint,
+    fontSize: 11.5,
+    textAlign: 'center',
+  },
+
   doneCard: {
     alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radius.lg,
-    paddingVertical: spacing.xxl,
-    paddingHorizontal: spacing.lg,
+    borderTopColor: colors.rimTop,
+    borderRadius: radius.xl,
+    paddingVertical: 36,
+    paddingHorizontal: spacing.xl,
+    ...elevation.card,
   },
   doneIcon: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     backgroundColor: colors.successSoft,
+    borderWidth: 1,
+    borderColor: `${colors.success}35`,
     alignItems: 'center',
     justifyContent: 'center',
   },
   doneTitle: {
     color: colors.text,
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: '800',
     textAlign: 'center',
   },
   doneText: {
     color: colors.muted,
-    fontSize: 12,
-    lineHeight: 19,
+    fontSize: 13.5,
+    lineHeight: 21,
     textAlign: 'center',
   },
   doneActions: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    gap: 10,
     marginTop: spacing.sm,
   },
   donePrimary: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
     backgroundColor: colors.accent,
     borderRadius: radius.pill,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    ...elevation.accent,
   },
   donePrimaryText: {
-    color: '#1A0D08',
-    fontSize: 12,
+    color: colors.onAccent,
+    fontSize: 13,
     fontWeight: '800',
   },
   doneSecondary: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.surfaceAlt,
+    gap: 6,
+    backgroundColor: colors.glass,
     borderRadius: radius.pill,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
     borderWidth: 1,
     borderColor: colors.border,
   },
   doneSecondaryText: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
   },
 });

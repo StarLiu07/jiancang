@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -14,7 +15,8 @@ import {
   View,
 } from 'react-native';
 
-import { colors, radius, spacing } from '../theme';
+import { colors, elevation, radius, spacing } from '../theme';
+import { MOTION, SpringPressable } from './Motion';
 
 export interface QuickAddPayload {
   input: string;
@@ -30,19 +32,58 @@ interface QuickAddModalProps {
   onSubmit: (payload: QuickAddPayload) => Promise<void> | void;
 }
 
+const SHEET_OFFSET = 380;
+
 export function QuickAddModal({ visible, busy = false, error = null, onClose, onSubmit }: QuickAddModalProps) {
+  const [mounted, setMounted] = useState(visible);
   const [input, setInput] = useState('');
   const [note, setNote] = useState('');
   const [tags, setTags] = useState('');
   const [pasting, setPasting] = useState(false);
 
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+  const sheetY = useRef(new Animated.Value(SHEET_OFFSET)).current;
+
   useEffect(() => {
     if (visible) {
+      setMounted(true);
       setInput('');
       setNote('');
       setTags('');
+      backdropOpacity.setValue(0);
+      sheetY.setValue(SHEET_OFFSET);
+
+      Animated.parallel([
+        Animated.timing(backdropOpacity, {
+          toValue: 1,
+          duration: 210,
+          easing: MOTION.easeOut,
+          useNativeDriver: true,
+        }),
+        Animated.spring(sheetY, {
+          toValue: 0,
+          ...MOTION.springGentle,
+        }),
+      ]).start();
+    } else if (mounted) {
+      Animated.parallel([
+        Animated.timing(backdropOpacity, {
+          toValue: 0,
+          duration: 180,
+          easing: MOTION.easeIn,
+          useNativeDriver: true,
+        }),
+        Animated.timing(sheetY, {
+          toValue: SHEET_OFFSET,
+          duration: 190,
+          easing: MOTION.easeIn,
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) setMounted(false);
+      });
     }
-  }, [visible]);
+  }, [visible, mounted, backdropOpacity, sheetY]);
 
   const canSubmit = input.trim().length > 0 && !busy;
 
@@ -70,23 +111,28 @@ export function QuickAddModal({ visible, busy = false, error = null, onClose, on
     });
   };
 
+  if (!mounted) return null;
+
   return (
-    <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
+    <Modal visible={mounted} transparent animationType="none" statusBarTranslucent onRequestClose={onClose}>
       <KeyboardAvoidingView
-        style={styles.backdrop}
+        style={styles.root}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <Pressable style={StyleSheet.absoluteFill} onPress={busy ? undefined : onClose} />
-        <View style={styles.sheet}>
+        <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={busy ? undefined : onClose} />
+        </Animated.View>
+
+        <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetY }] }]}>
           <View style={styles.handle} />
           <View style={styles.header}>
             <View style={styles.headerText}>
               <Text style={styles.title}>快速剪藏</Text>
               <Text style={styles.subtitle}>粘贴链接或小红书口令，剩下的交给后端</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} style={styles.closeButton}>
+            <SpringPressable onPress={onClose} hitSlop={10} scaleTo={0.9} contentStyle={styles.closeButton}>
               <Ionicons name="close" size={18} color={colors.muted} />
-            </Pressable>
+            </SpringPressable>
           </View>
 
           <ScrollView
@@ -106,10 +152,12 @@ export function QuickAddModal({ visible, busy = false, error = null, onClose, on
                 autoCorrect={false}
                 editable={!busy}
               />
-              <Pressable
+              <SpringPressable
                 onPress={pasteFromClipboard}
                 disabled={pasting}
-                style={({ pressed }) => [styles.pasteButton, pressed && styles.pressed]}
+                scaleTo={0.93}
+                style={styles.pasteAnchor}
+                contentStyle={styles.pasteButton}
               >
                 {pasting ? (
                   <ActivityIndicator size="small" color={colors.accent} />
@@ -119,84 +167,91 @@ export function QuickAddModal({ visible, busy = false, error = null, onClose, on
                     <Text style={styles.pasteText}>粘贴</Text>
                   </>
                 )}
-              </Pressable>
+              </SpringPressable>
             </View>
 
-            <Text style={styles.label}>一句备注</Text>
-            <TextInput
-              value={note}
-              onChangeText={setNote}
-              placeholder="为什么想收藏？（可留空）"
-              placeholderTextColor={colors.faint}
-              style={styles.singleInput}
-              editable={!busy}
-              maxLength={500}
-            />
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>一句备注</Text>
+              <TextInput
+                value={note}
+                onChangeText={setNote}
+                placeholder="为什么想收藏？（可留空）"
+                placeholderTextColor={colors.faint}
+                style={styles.singleInput}
+                editable={!busy}
+                maxLength={500}
+              />
+            </View>
 
-            <Text style={styles.label}>初始标签</Text>
-            <TextInput
-              value={tags}
-              onChangeText={setTags}
-              placeholder="AI、设计、稍后实践（逗号或空格分隔）"
-              placeholderTextColor={colors.faint}
-              style={styles.singleInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!busy}
-            />
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>初始标签</Text>
+              <TextInput
+                value={tags}
+                onChangeText={setTags}
+                placeholder="AI、设计、稍后实践（逗号或空格分隔）"
+                placeholderTextColor={colors.faint}
+                style={styles.singleInput}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!busy}
+              />
+            </View>
 
             {error ? (
               <View style={styles.formError}>
-                <Ionicons name="alert-circle-outline" size={14} color={colors.danger} />
+                <Ionicons name="alert-circle-outline" size={15} color={colors.danger} />
                 <Text style={styles.formErrorText}>{error}</Text>
               </View>
             ) : null}
 
-            <Pressable
+            <SpringPressable
               onPress={submit}
               disabled={!canSubmit}
-              style={({ pressed }) => [
-                styles.submitButton,
-                !canSubmit && styles.submitDisabled,
-                pressed && canSubmit && styles.pressed,
-              ]}
+              scaleTo={0.97}
+              contentStyle={[styles.submitButton, !canSubmit && styles.submitDisabled]}
             >
               {busy ? (
-                <ActivityIndicator size="small" color="#1A0D08" />
+                <ActivityIndicator size="small" color={colors.onAccent} />
               ) : (
                 <>
-                  <Ionicons name="add-circle" size={18} color="#1A0D08" />
+                  <Ionicons name="add-circle" size={18} color={colors.onAccent} />
                   <Text style={styles.submitText}>提交剪藏</Text>
                 </>
               )}
-            </Pressable>
+            </SpringPressable>
           </ScrollView>
-        </View>
+        </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  root: {
     flex: 1,
-    backgroundColor: colors.overlay,
     justifyContent: 'flex-end',
   },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: colors.overlay,
+  },
   sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
+    backgroundColor: colors.surfaceElevated,
+    borderTopLeftRadius: radius.xxl,
+    borderTopRightRadius: radius.xxl,
     borderWidth: 1,
+    borderBottomWidth: 0,
     borderColor: colors.border,
-    paddingHorizontal: spacing.lg,
+    borderTopColor: colors.rimTop,
+    paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xxl,
     maxHeight: '88%',
+    ...elevation.floating,
   },
   handle: {
     alignSelf: 'center',
-    width: 38,
+    width: 40,
     height: 4,
     borderRadius: 2,
     backgroundColor: colors.borderStrong,
@@ -209,19 +264,25 @@ const styles = StyleSheet.create({
   },
   headerText: {
     flex: 1,
-    gap: 3,
+    gap: 4,
   },
   title: {
     color: colors.text,
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '800',
+    letterSpacing: -0.2,
   },
   subtitle: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 12.5,
   },
   closeButton: {
-    padding: 4,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.glass,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scroll: {
     marginTop: spacing.lg,
@@ -230,53 +291,61 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingBottom: spacing.sm,
   },
+  fieldGroup: {
+    gap: 6,
+  },
   inputWrap: {
     position: 'relative',
   },
   input: {
-    minHeight: 96,
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.md,
+    minHeight: 100,
+    backgroundColor: colors.bg,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
-    paddingBottom: 34,
+    borderColor: colors.borderSubtle,
+    padding: 14,
+    paddingBottom: 38,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 21,
     textAlignVertical: 'top',
   },
-  pasteButton: {
+  pasteAnchor: {
     position: 'absolute',
-    right: spacing.sm,
-    bottom: spacing.sm,
+    right: 10,
+    bottom: 10,
+  },
+  pasteButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     backgroundColor: colors.accentSoft,
     borderRadius: radius.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: colors.accentBorder,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
   },
   pasteText: {
     color: colors.accent,
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
   },
   label: {
     color: colors.muted,
     fontSize: 12,
     fontWeight: '600',
+    marginLeft: 2,
   },
   singleInput: {
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.bg,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     color: colors.text,
-    fontSize: 13,
+    fontSize: 14,
   },
   submitButton: {
     flexDirection: 'row',
@@ -284,35 +353,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     backgroundColor: colors.accent,
-    borderRadius: radius.md,
-    paddingVertical: 14,
-    marginTop: spacing.xs,
+    borderRadius: radius.lg,
+    paddingVertical: 15,
+    marginTop: spacing.sm,
+    ...elevation.accent,
   },
   formError: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 6,
     backgroundColor: colors.dangerSoft,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: `${colors.danger}44`,
-    padding: spacing.sm,
+    borderColor: `${colors.danger}40`,
+    padding: 10,
   },
   formErrorText: {
     flex: 1,
     color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
   },
   submitDisabled: {
-    opacity: 0.42,
+    opacity: 0.36,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   submitText: {
-    color: '#1A0D08',
-    fontSize: 14,
+    color: colors.onAccent,
+    fontSize: 15,
     fontWeight: '800',
-  },
-  pressed: {
-    opacity: 0.8,
   },
 });

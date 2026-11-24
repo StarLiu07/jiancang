@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
-import { colors, radius, spacing } from '../theme';
+import { colors, elevation, radius } from '../theme';
 import { hostOf, truncateMiddle } from '../utils/url';
+import { FadeSlideIn, SpringPressable } from './Motion';
 
 interface ClipboardBannerProps {
   url: string;
@@ -14,37 +15,41 @@ interface ClipboardBannerProps {
 export function ClipboardBanner({ url, busy = false, onCapture, onDismiss }: ClipboardBannerProps) {
   const host = hostOf(url) || url;
   return (
-    <View style={styles.container}>
-      <View style={styles.iconWrap}>
-        <Ionicons name="link" size={18} color={colors.accent} />
+    <FadeSlideIn distance={-10} duration={240}>
+      <View style={styles.container}>
+        <View style={styles.accentBar} />
+        <View style={styles.iconWrap}>
+          <Ionicons name="link" size={17} color={colors.accent} />
+        </View>
+
+        <View style={styles.body}>
+          <Text style={styles.title}>检测到剪贴板链接</Text>
+          <Text style={styles.host} numberOfLines={1}>
+            {truncateMiddle(host, 34)}
+          </Text>
+        </View>
+
+        <SpringPressable
+          onPress={onCapture}
+          disabled={busy}
+          scaleTo={0.93}
+          contentStyle={[styles.captureButton, busy && styles.buttonMuted]}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={colors.onAccent} />
+          ) : (
+            <>
+              <Ionicons name="add" size={15} color={colors.onAccent} />
+              <Text style={styles.captureText}>剪藏</Text>
+            </>
+          )}
+        </SpringPressable>
+
+        <SpringPressable onPress={onDismiss} hitSlop={10} scaleTo={0.86} contentStyle={styles.closeButton}>
+          <Ionicons name="close" size={16} color={colors.faint} />
+        </SpringPressable>
       </View>
-
-      <View style={styles.body}>
-        <Text style={styles.title}>检测到新链接，一键剪藏</Text>
-        <Text style={styles.host} numberOfLines={1}>
-          {truncateMiddle(host, 34)}
-        </Text>
-      </View>
-
-      <Pressable
-        onPress={onCapture}
-        disabled={busy}
-        style={({ pressed }) => [styles.captureButton, (pressed || busy) && styles.buttonPressed]}
-      >
-        {busy ? (
-          <ActivityIndicator size="small" color="#1A0D08" />
-        ) : (
-          <>
-            <Ionicons name="add" size={15} color="#1A0D08" />
-            <Text style={styles.captureText}>剪藏</Text>
-          </>
-        )}
-      </Pressable>
-
-      <Pressable onPress={onDismiss} hitSlop={10} style={styles.closeButton}>
-        <Ionicons name="close" size={16} color={colors.muted} />
-      </Pressable>
-    </View>
+    </FadeSlideIn>
   );
 }
 
@@ -52,18 +57,31 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.md,
+    gap: 10,
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: `${colors.accent}44`,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md,
+    borderColor: colors.accentBorder,
+    paddingVertical: 11,
+    paddingLeft: 14,
+    paddingRight: 10,
+    overflow: 'hidden',
+    ...elevation.card,
+  },
+  accentBar: {
+    position: 'absolute',
+    left: 0,
+    top: 10,
+    bottom: 10,
+    width: 3,
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
+    backgroundColor: colors.accent,
   },
   iconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.sm,
+    width: 34,
+    height: 34,
+    borderRadius: radius.md,
     backgroundColor: colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -75,11 +93,11 @@ const styles = StyleSheet.create({
   title: {
     color: colors.text,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   host: {
     color: colors.muted,
-    fontSize: 11,
+    fontSize: 11.5,
   },
   captureButton: {
     flexDirection: 'row',
@@ -87,20 +105,20 @@ const styles = StyleSheet.create({
     gap: 3,
     backgroundColor: colors.accent,
     borderRadius: radius.pill,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: 13,
     paddingVertical: 7,
-    minWidth: 62,
+    minWidth: 64,
     justifyContent: 'center',
   },
-  buttonPressed: {
-    opacity: 0.75,
+  buttonMuted: {
+    opacity: 0.72,
   },
   captureText: {
-    color: '#1A0D08',
+    color: colors.onAccent,
     fontSize: 12,
     fontWeight: '800',
   },
   closeButton: {
-    padding: 2,
+    padding: 4,
   },
 });

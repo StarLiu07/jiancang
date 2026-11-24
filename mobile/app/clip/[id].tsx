@@ -16,12 +16,13 @@ import {
 } from 'react-native';
 
 import { api, mediaUrl, pickErrorMessage } from '../../src/api/client';
-import { MarkdownText } from '../../src/components/MarkdownText';
-import { PlatformBadge } from '../../src/components/PlatformBadge';
 import { StatusPill } from '../../src/components/ClipCard';
+import { MarkdownText } from '../../src/components/MarkdownText';
+import { FadeSlideIn, SkeletonDetail, SpringPressable } from '../../src/components/Motion';
+import { PlatformBadge } from '../../src/components/PlatformBadge';
 import { useToast } from '../../src/components/Toast';
 import { useSettings } from '../../src/store/settings';
-import { colors, radius, spacing } from '../../src/theme';
+import { colors, elevation, radius, spacing } from '../../src/theme';
 import type { ClipDetail, ClipUpdateInput } from '../../src/types';
 import { formatDateTime, formatTags, parseTags } from '../../src/utils/format';
 
@@ -220,20 +221,20 @@ export default function ClipDetailScreen() {
 
   if (loading && !clip) {
     return (
-      <View style={styles.center}>
+      <>
         <Stack.Screen options={{ title: '剪藏详情' }} />
         {error ? (
-          <>
+          <View style={styles.center}>
             <Text style={styles.errorTitle}>加载失败</Text>
             <Text style={styles.errorText}>{error}</Text>
-            <Pressable onPress={() => void load('initial')} style={styles.retryButton}>
+            <SpringPressable onPress={() => void load('initial')} scaleTo={0.95} contentStyle={styles.retryButton}>
               <Text style={styles.retryButtonText}>重试</Text>
-            </Pressable>
-          </>
+            </SpringPressable>
+          </View>
         ) : (
-          <ActivityIndicator color={colors.accent} />
+          <SkeletonDetail />
         )}
-      </View>
+      </>
     );
   }
 
@@ -264,14 +265,14 @@ export default function ClipDetailScreen() {
             onRefresh={() => void load('refresh')}
             tintColor={colors.accent}
             colors={[colors.accent]}
-            progressBackgroundColor={colors.surface}
+            progressBackgroundColor={colors.surfaceElevated}
           />
         }
       >
-        <View style={styles.hero}>
+        <FadeSlideIn distance={10} duration={240} style={styles.hero}>
           <View style={styles.heroBadges}>
             <PlatformBadge platform={clip.platform} size="md" />
-            <StatusPill status={clip.status} />
+            {clip.status !== 'ready' ? <StatusPill status={clip.status} /> : null}
             {clip.review_state === 'archived' ? (
               <View style={styles.archivedPill}>
                 <Text style={styles.archivedText}>已归档</Text>
@@ -283,90 +284,95 @@ export default function ClipDetailScreen() {
 
           {clip.author ? <Text style={styles.author}>@{clip.author}</Text> : null}
 
-          <View style={styles.metaGrid}>
+          <View style={styles.metaStrip}>
             <MetaItem label="收藏时间" value={formatDateTime(clip.created_at)} />
             <MetaItem label="发布时间" value={formatDateTime(clip.published_at)} />
             <MetaItem label="回顾次数" value={`${clip.review_count} 次`} />
             <MetaItem label="下次回顾" value={formatDateTime(clip.next_review_at)} />
           </View>
 
-          <Pressable
+          <SpringPressable
             onPress={() => void openOriginal()}
-            style={({ pressed }) => [styles.linkButton, pressed && styles.pressed]}
+            scaleTo={0.98}
+            contentStyle={styles.linkButton}
           >
-            <Ionicons name="open-outline" size={15} color={colors.info} />
-            <Text style={styles.linkText} numberOfLines={1}>
-              打开原文链接
-            </Text>
+            <Ionicons name="open-outline" size={15} color={colors.textSecondary} />
+            <Text style={styles.linkText}>打开原文</Text>
             <Text style={styles.linkHost} numberOfLines={1}>
               {clip.url.replace(/^https?:\/\//, '')}
             </Text>
-          </Pressable>
-        </View>
+            <Ionicons name="chevron-forward" size={14} color={colors.faint} />
+          </SpringPressable>
+        </FadeSlideIn>
 
         {needsRepair ? (
-          <View style={styles.warnCard}>
-            <View style={styles.warnHeader}>
-              <Ionicons name="warning-outline" size={18} color={colors.warning} />
-              <Text style={styles.warnTitle}>
-                {clip.status === 'failed' ? '这条剪藏抓取失败了' : '这条剪藏只抓到了一部分'}
+          <FadeSlideIn delay={40} distance={10}>
+            <View style={styles.warnCard}>
+              <View style={styles.warnHeader}>
+                <Ionicons name="warning-outline" size={18} color={colors.warning} />
+                <Text style={styles.warnTitle}>
+                  {clip.status === 'failed' ? '这条剪藏抓取失败了' : '这条剪藏只抓到了一部分'}
+                </Text>
+              </View>
+              <Text style={styles.warnText}>
+                {clip.error_message || '可以重新抓取一次，或在下方手动补全正文与备注。'}
               </Text>
+              <SpringPressable
+                onPress={() => void retry()}
+                disabled={retrying}
+                scaleTo={0.95}
+                contentStyle={[styles.retryInline, retrying && styles.pressed]}
+              >
+                {retrying ? (
+                  <ActivityIndicator size="small" color={colors.onAccent} />
+                ) : (
+                  <>
+                    <Ionicons name="refresh" size={14} color={colors.onAccent} />
+                    <Text style={styles.retryInlineText}>重新抓取</Text>
+                  </>
+                )}
+              </SpringPressable>
             </View>
-            <Text style={styles.warnText}>
-              {clip.error_message || '可以重新抓取一次，或在下方手动补全正文与备注。'}
-            </Text>
-            <Pressable
-              onPress={() => void retry()}
-              disabled={retrying}
-              style={({ pressed }) => [styles.retryInline, (pressed || retrying) && styles.pressed]}
-            >
-              {retrying ? (
-                <ActivityIndicator size="small" color="#1A0D08" />
-              ) : (
-                <>
-                  <Ionicons name="refresh" size={15} color="#1A0D08" />
-                  <Text style={styles.retryInlineText}>重新抓取</Text>
-                </>
-              )}
-            </Pressable>
-          </View>
+          </FadeSlideIn>
         ) : null}
 
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="sparkles" size={16} color={colors.accent} />
-            <Text style={styles.cardTitle}>AI 提炼</Text>
-            <View style={styles.grow} />
-            <Text style={styles.cardHint}>{AI_STATUS_LABEL[clip.ai_status]}</Text>
-          </View>
-
-          {clip.summary ? (
-            <Text style={styles.summary}>{clip.summary}</Text>
-          ) : (
-            <Text style={styles.placeholder}>
-              {clip.ai_status === 'pending' ? 'AI 正在提炼要点，稍后下拉刷新。' : '这条还没有 AI 摘要。'}
-            </Text>
-          )}
-
-          {clip.key_points.length ? (
-            <View style={styles.points}>
-              {clip.key_points.map((point, index) => (
-                <View key={`${index}-${point.slice(0, 12)}`} style={styles.pointRow}>
-                  <View style={styles.pointDot} />
-                  <Text style={styles.pointText}>{point}</Text>
-                </View>
-              ))}
+        <FadeSlideIn delay={55} distance={12}>
+          <View style={styles.aiCard}>
+            <View style={styles.aiAccentBar} />
+            <View style={styles.sectionHeader}>
+              <Ionicons name="sparkles" size={15} color={colors.accent} />
+              <Text style={styles.aiCardTitle}>AI 提炼</Text>
+              <View style={styles.grow} />
+              <Text style={styles.sectionHint}>{AI_STATUS_LABEL[clip.ai_status]}</Text>
             </View>
-          ) : null}
-        </View>
+
+            {clip.summary ? (
+              <Text style={styles.summary}>{clip.summary}</Text>
+            ) : (
+              <Text style={styles.placeholder}>
+                {clip.ai_status === 'pending' ? 'AI 正在提炼要点，稍后下拉刷新。' : '这条还没有 AI 摘要。'}
+              </Text>
+            )}
+
+            {clip.key_points.length ? (
+              <View style={styles.points}>
+                {clip.key_points.map((point, index) => (
+                  <View key={`${index}-${point.slice(0, 12)}`} style={styles.pointRow}>
+                    <View style={styles.pointDot} />
+                    <Text style={styles.pointText}>{point}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        </FadeSlideIn>
 
         {clip.media.length ? (
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Ionicons name="images-outline" size={16} color={colors.info} />
-              <Text style={styles.cardTitle}>本地化存档图片</Text>
+          <View style={styles.framelessSection}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionEyebrow}>存档图片</Text>
               <View style={styles.grow} />
-              <Text style={styles.cardHint}>{clip.media.length} 张</Text>
+              <Text style={styles.sectionHint}>{clip.media.length} 张 · 已本地化</Text>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gallery}>
               {clip.media.map((item) => {
@@ -387,16 +393,15 @@ export default function ClipDetailScreen() {
                 );
               })}
             </ScrollView>
-            <Text style={styles.galleryHint}>图片已由后端本地化存档，原链接失效也不影响阅读。</Text>
           </View>
         ) : null}
 
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="document-text-outline" size={16} color={colors.success} />
-            <Text style={styles.cardTitle}>存档正文</Text>
+        <View style={styles.articleSection}>
+          <View style={styles.sectionDivider} />
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionEyebrow}>存档正文</Text>
             <View style={styles.grow} />
-            <Text style={styles.cardHint}>{clip.content_markdown.length} 字</Text>
+            <Text style={styles.sectionHint}>{clip.content_markdown.length} 字</Text>
           </View>
           {clip.content_markdown.trim() ? (
             <MarkdownText content={clip.content_markdown} selectable />
@@ -405,77 +410,87 @@ export default function ClipDetailScreen() {
           )}
         </View>
 
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="create-outline" size={16} color={colors.warning} />
-            <Text style={styles.cardTitle}>我的笔记与标签</Text>
+        <View style={styles.editorCard}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="create-outline" size={16} color={colors.muted} />
+            <Text style={styles.editorTitle}>我的笔记与标签</Text>
             <View style={styles.grow} />
             {!needsRepair ? (
               <Pressable onPress={() => setShowContentEditor((value) => !value)} hitSlop={6}>
-                <Text style={styles.toggleText}>{showContentEditor ? '收起编辑' : '编辑标题 / 摘要 / 正文'}</Text>
+                <Text style={styles.toggleText}>{showContentEditor ? '收起编辑' : '编辑正文'}</Text>
               </Pressable>
             ) : null}
           </View>
 
           {editingContent ? (
             <>
-              <Text style={styles.fieldLabel}>标题</Text>
-              <TextInput
-                value={form.title}
-                onChangeText={(value) => setForm((prev) => ({ ...prev, title: value }))}
-                style={styles.input}
-                placeholder="剪藏标题"
-                placeholderTextColor={colors.faint}
-                editable={!saving}
-              />
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>标题</Text>
+                <TextInput
+                  value={form.title}
+                  onChangeText={(value) => setForm((prev) => ({ ...prev, title: value }))}
+                  style={styles.input}
+                  placeholder="剪藏标题"
+                  placeholderTextColor={colors.faint}
+                  editable={!saving}
+                />
+              </View>
 
-              <Text style={styles.fieldLabel}>一句话摘要</Text>
-              <TextInput
-                value={form.summary}
-                onChangeText={(value) => setForm((prev) => ({ ...prev, summary: value }))}
-                style={styles.input}
-                placeholder="这条内容讲了什么？"
-                placeholderTextColor={colors.faint}
-                editable={!saving}
-              />
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>一句话摘要</Text>
+                <TextInput
+                  value={form.summary}
+                  onChangeText={(value) => setForm((prev) => ({ ...prev, summary: value }))}
+                  style={styles.input}
+                  placeholder="这条内容讲了什么？"
+                  placeholderTextColor={colors.faint}
+                  editable={!saving}
+                />
+              </View>
 
-              <Text style={styles.fieldLabel}>正文（Markdown）</Text>
-              <TextInput
-                value={form.content}
-                onChangeText={(value) => setForm((prev) => ({ ...prev, content: value }))}
-                style={[styles.input, styles.textarea]}
-                placeholder="把正文粘贴到这里，保存后即成为本地存档。"
-                placeholderTextColor={colors.faint}
-                multiline
-                textAlignVertical="top"
-                editable={!saving}
-              />
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>正文（Markdown）</Text>
+                <TextInput
+                  value={form.content}
+                  onChangeText={(value) => setForm((prev) => ({ ...prev, content: value }))}
+                  style={[styles.input, styles.textarea]}
+                  placeholder="把正文粘贴到这里，保存后即成为本地存档。"
+                  placeholderTextColor={colors.faint}
+                  multiline
+                  textAlignVertical="top"
+                  editable={!saving}
+                />
+              </View>
             </>
           ) : null}
 
-          <Text style={styles.fieldLabel}>个人笔记</Text>
-          <TextInput
-            value={form.note}
-            onChangeText={(value) => setForm((prev) => ({ ...prev, note: value }))}
-            style={[styles.input, styles.noteArea]}
-            placeholder="写点自己的理解，或者下一步要做什么…"
-            placeholderTextColor={colors.faint}
-            multiline
-            textAlignVertical="top"
-            editable={!saving}
-          />
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>个人笔记</Text>
+            <TextInput
+              value={form.note}
+              onChangeText={(value) => setForm((prev) => ({ ...prev, note: value }))}
+              style={[styles.input, styles.noteArea]}
+              placeholder="写点自己的理解，或者下一步要做什么…"
+              placeholderTextColor={colors.faint}
+              multiline
+              textAlignVertical="top"
+              editable={!saving}
+            />
+          </View>
 
-          <Text style={styles.fieldLabel}>标签</Text>
-          <TextInput
-            value={form.tags}
-            onChangeText={(value) => setForm((prev) => ({ ...prev, tags: value }))}
-            style={styles.input}
-            placeholder="AI, 设计, 稍后实践"
-            placeholderTextColor={colors.faint}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!saving}
-          />
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>标签</Text>
+            <TextInput
+              value={form.tags}
+              onChangeText={(value) => setForm((prev) => ({ ...prev, tags: value }))}
+              style={styles.input}
+              placeholder="AI, 设计, 稍后实践"
+              placeholderTextColor={colors.faint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!saving}
+            />
+          </View>
 
           {nextTags.length ? (
             <View style={styles.previewTags}>
@@ -487,31 +502,30 @@ export default function ClipDetailScreen() {
             </View>
           ) : null}
 
-          <Pressable
+          <SpringPressable
             onPress={() => void save()}
             disabled={!dirty || saving}
-            style={({ pressed }) => [
-              styles.saveButton,
-              (!dirty || saving) && styles.saveButtonDisabled,
-              pressed && dirty && styles.pressed,
-            ]}
+            scaleTo={0.97}
+            contentStyle={[styles.saveButton, (!dirty || saving) && styles.saveButtonDisabled]}
           >
             {saving ? (
-              <ActivityIndicator size="small" color="#1A0D08" />
+              <ActivityIndicator size="small" color={colors.onAccent} />
             ) : (
               <>
-                <Ionicons name="checkmark" size={16} color="#1A0D08" />
+                <Ionicons name="checkmark" size={16} color={colors.onAccent} />
                 <Text style={styles.saveText}>{dirty ? '保存修改' : '没有未保存的修改'}</Text>
               </>
             )}
-          </Pressable>
+          </SpringPressable>
         </View>
 
         <View style={styles.footerActions}>
-          <Pressable
+          <SpringPressable
             onPress={() => void toggleArchive()}
             disabled={archiveBusy}
-            style={({ pressed }) => [styles.footerButton, (pressed || archiveBusy) && styles.pressed]}
+            scaleTo={0.96}
+            style={styles.footerFlex}
+            contentStyle={[styles.footerButton, archiveBusy && styles.pressed]}
           >
             {archiveBusy ? (
               <ActivityIndicator size="small" color={colors.textSecondary} />
@@ -525,12 +539,14 @@ export default function ClipDetailScreen() {
             <Text style={styles.footerButtonText}>
               {clip.review_state === 'archived' ? '移回收藏库' : '快速归档'}
             </Text>
-          </Pressable>
+          </SpringPressable>
 
-          <Pressable
+          <SpringPressable
             onPress={remove}
             disabled={deleteBusy}
-            style={({ pressed }) => [styles.footerButton, styles.footerDanger, (pressed || deleteBusy) && styles.pressed]}
+            scaleTo={0.96}
+            style={styles.footerFlex}
+            contentStyle={[styles.footerButton, styles.footerDanger, deleteBusy && styles.pressed]}
           >
             {deleteBusy ? (
               <ActivityIndicator size="small" color={colors.danger} />
@@ -538,12 +554,10 @@ export default function ClipDetailScreen() {
               <Ionicons name="trash-outline" size={16} color={colors.danger} />
             )}
             <Text style={[styles.footerButtonText, { color: colors.danger }]}>删除</Text>
-          </Pressable>
+          </SpringPressable>
         </View>
 
-        {error && clip ? (
-          <Text style={styles.staleHint}>同步提示：{error}</Text>
-        ) : null}
+        {error && clip ? <Text style={styles.staleHint}>同步提示：{error}</Text> : null}
       </ScrollView>
     </>
   );
@@ -566,9 +580,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   content: {
-    padding: spacing.lg,
-    paddingBottom: spacing.xxl,
-    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: 44,
+    gap: 22,
   },
   center: {
     flex: 1,
@@ -580,29 +595,30 @@ const styles = StyleSheet.create({
   },
   errorTitle: {
     color: colors.text,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
   },
   errorText: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 13,
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 20,
   },
   retryButton: {
     marginTop: spacing.sm,
     backgroundColor: colors.accent,
     borderRadius: radius.pill,
     paddingHorizontal: spacing.xl,
-    paddingVertical: 9,
+    paddingVertical: 10,
   },
   retryButtonText: {
-    color: '#1A0D08',
-    fontSize: 12,
+    color: colors.onAccent,
+    fontSize: 13,
     fontWeight: '800',
   },
+
   hero: {
-    gap: spacing.md,
+    gap: 12,
   },
   heroBadges: {
     flexDirection: 'row',
@@ -611,36 +627,36 @@ const styles = StyleSheet.create({
   },
   archivedPill: {
     borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    backgroundColor: colors.glass,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
   },
   archivedText: {
     color: colors.muted,
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 10.5,
+    fontWeight: '600',
   },
   title: {
     color: colors.text,
-    fontSize: 22,
-    lineHeight: 31,
+    fontSize: 24,
+    lineHeight: 33,
     fontWeight: '800',
+    letterSpacing: -0.3,
   },
   author: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: -4,
   },
-  metaGrid: {
+  metaStrip: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    rowGap: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    paddingVertical: 12,
+    rowGap: 10,
   },
   metaItem: {
     width: '50%',
@@ -648,41 +664,44 @@ const styles = StyleSheet.create({
   },
   metaLabel: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 10.5,
+    fontWeight: '600',
   },
   metaValue: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   linkButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.infoSoft,
+    gap: 8,
+    backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: `${colors.info}44`,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
   },
   linkText: {
-    color: colors.info,
-    fontSize: 12,
-    fontWeight: '700',
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
   },
   linkHost: {
     flex: 1,
-    color: colors.muted,
-    fontSize: 10,
+    color: colors.faint,
+    fontSize: 11.5,
     textAlign: 'right',
   },
+
   warnCard: {
     backgroundColor: colors.warningSoft,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: `${colors.warning}55`,
-    padding: spacing.md,
+    borderColor: `${colors.warning}44`,
+    padding: spacing.lg,
     gap: spacing.sm,
   },
   warnHeader: {
@@ -692,13 +711,13 @@ const styles = StyleSheet.create({
   },
   warnTitle: {
     color: colors.text,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
   },
   warnText: {
     color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 17,
+    fontSize: 12.5,
+    lineHeight: 19,
   },
   retryInline: {
     alignSelf: 'flex-start',
@@ -707,84 +726,117 @@ const styles = StyleSheet.create({
     gap: 5,
     backgroundColor: colors.warning,
     borderRadius: radius.pill,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: 14,
     paddingVertical: 7,
+    marginTop: 2,
   },
   retryInlineText: {
-    color: '#1A0D08',
-    fontSize: 11,
+    color: colors.onAccent,
+    fontSize: 12,
     fontWeight: '800',
   },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+
+  aiCard: {
+    position: 'relative',
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: spacing.lg,
-    gap: spacing.md,
+    borderTopColor: colors.accentBorder,
+    padding: spacing.xl,
+    paddingLeft: 22,
+    gap: 14,
+    overflow: 'hidden',
+    ...elevation.card,
   },
-  cardHeader: {
+  aiAccentBar: {
+    position: 'absolute',
+    left: 0,
+    top: 18,
+    bottom: 18,
+    width: 3,
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
+    backgroundColor: colors.accent,
+  },
+  aiCardTitle: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+  sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: 7,
   },
-  cardTitle: {
-    color: colors.text,
-    fontSize: 13,
+  sectionEyebrow: {
+    color: colors.muted,
+    fontSize: 12.5,
     fontWeight: '700',
+    letterSpacing: 0.6,
   },
-  cardHint: {
+  sectionHint: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 11,
   },
   grow: {
     flex: 1,
   },
   summary: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 24,
+    fontSize: 15.5,
+    lineHeight: 25,
     fontWeight: '600',
   },
   placeholder: {
     color: colors.muted,
-    fontSize: 12,
-    lineHeight: 19,
+    fontSize: 13.5,
+    lineHeight: 21,
   },
   points: {
-    gap: spacing.sm,
+    gap: 10,
+    paddingTop: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderSubtle,
   },
   pointRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: spacing.sm,
+    gap: 10,
   },
   pointDot: {
     width: 5,
     height: 5,
     borderRadius: 3,
     backgroundColor: colors.accent,
-    marginTop: 8,
+    marginTop: 9,
   },
   pointText: {
     flex: 1,
     color: colors.textSecondary,
-    fontSize: 13,
-    lineHeight: 21,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+
+  framelessSection: {
+    gap: 12,
   },
   gallery: {
-    gap: spacing.sm,
+    gap: 10,
     paddingRight: spacing.lg,
   },
   galleryItem: {
-    width: 210,
+    width: 216,
     gap: 6,
   },
   galleryImage: {
-    width: 210,
-    height: 270,
-    borderRadius: radius.md,
-    backgroundColor: colors.surfaceAlt,
+    width: 216,
+    height: 276,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: colors.border,
   },
   galleryFallback: {
     alignItems: 'center',
@@ -792,38 +844,61 @@ const styles = StyleSheet.create({
   },
   galleryLabel: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 11,
   },
-  galleryHint: {
-    color: colors.faint,
-    fontSize: 10,
+
+  articleSection: {
+    gap: 14,
+  },
+  sectionDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginBottom: 2,
+  },
+
+  editorCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    padding: spacing.lg,
+    gap: 14,
+  },
+  editorTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
   },
   toggleText: {
-    color: colors.info,
-    fontSize: 10,
+    color: colors.accent,
+    fontSize: 12,
     fontWeight: '700',
+  },
+  fieldGroup: {
+    gap: 6,
   },
   fieldLabel: {
     color: colors.muted,
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '600',
+    marginLeft: 2,
   },
   input: {
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.bg,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 21,
   },
   textarea: {
-    minHeight: 150,
+    minHeight: 160,
   },
   noteArea: {
-    minHeight: 88,
+    minHeight: 92,
   },
   previewTags: {
     flexDirection: 'row',
@@ -831,14 +906,14 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   previewTag: {
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: colors.glass,
     borderRadius: radius.pill,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
   },
   previewTagText: {
     color: colors.textSecondary,
-    fontSize: 11,
+    fontSize: 11.5,
   },
   saveButton: {
     flexDirection: 'row',
@@ -847,23 +922,28 @@ const styles = StyleSheet.create({
     gap: 6,
     backgroundColor: colors.accent,
     borderRadius: radius.md,
-    paddingVertical: 12,
+    paddingVertical: 13,
+    ...elevation.accent,
   },
   saveButtonDisabled: {
-    opacity: 0.4,
+    opacity: 0.34,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   saveText: {
-    color: '#1A0D08',
-    fontSize: 13,
+    color: colors.onAccent,
+    fontSize: 14,
     fontWeight: '800',
   },
+
   footerActions: {
     flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: spacing.xs,
+    gap: 10,
+  },
+  footerFlex: {
+    flex: 1,
   },
   footerButton: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -871,23 +951,23 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    paddingVertical: 12,
+    borderColor: colors.borderSubtle,
+    paddingVertical: 13,
   },
   footerDanger: {
-    borderColor: `${colors.danger}44`,
-    backgroundColor: colors.dangerSoft,
+    backgroundColor: 'transparent',
+    borderColor: `${colors.danger}33`,
   },
   footerButtonText: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
   },
   staleHint: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 11,
     textAlign: 'center',
-    paddingTop: spacing.sm,
+    paddingTop: spacing.xs,
   },
   pressed: {
     opacity: 0.78,

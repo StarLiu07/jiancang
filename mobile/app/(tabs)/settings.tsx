@@ -15,10 +15,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { api, pickErrorMessage } from '../../src/api/client';
+import { FadeSlideIn, SpringPressable } from '../../src/components/Motion';
 import { useToast } from '../../src/components/Toast';
 import { BASE_URL_PRESETS, type AppSettings } from '../../src/storage/settings';
 import { useSettings } from '../../src/store/settings';
-import { colors, radius, spacing } from '../../src/theme';
+import { colors, elevation, radius, spacing } from '../../src/theme';
 import type { HealthResponse } from '../../src/types';
 import { formatClock, formatDateTime } from '../../src/utils/format';
 import {
@@ -159,187 +160,205 @@ export default function SettingsScreen() {
           <Text style={styles.subtitle}>连接家里的 NUC，或随时通过 Tailscale 回顾</Text>
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>后端服务</Text>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>服务地址</Text>
-            <TextInput
-              value={baseUrl}
-              onChangeText={(value) => {
-                setBaseUrl(value);
-                setHealth(null);
-                setTestError(null);
-              }}
-              placeholder="http://192.168.31.98:8420"
-              placeholderTextColor={colors.faint}
-              style={styles.input}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              inputMode="url"
-            />
-          </View>
-
-          <View style={styles.presetRow}>
-            {BASE_URL_PRESETS.map((preset) => {
-              const selected = normalizedBaseUrl === preset.url;
-              return (
-                <Pressable
-                  key={preset.url}
-                  onPress={() => applyPreset(preset.url)}
-                  style={[styles.presetButton, selected && styles.presetButtonSelected]}
-                >
-                  <Text style={[styles.presetLabel, selected && styles.presetLabelSelected]}>{preset.label}</Text>
-                  <Text style={styles.presetHint} numberOfLines={1}>
-                    {preset.url}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>API Token（可选）</Text>
-            <View style={styles.tokenRow}>
+        <View style={styles.group}>
+          <Text style={styles.groupTitle}>后端服务</Text>
+          <View style={styles.section}>
+            <View style={styles.field}>
+              <Text style={styles.label}>服务地址</Text>
               <TextInput
-                value={token}
-                onChangeText={setToken}
-                placeholder="后端开启鉴权时填写"
+                value={baseUrl}
+                onChangeText={(value) => {
+                  setBaseUrl(value);
+                  setHealth(null);
+                  setTestError(null);
+                }}
+                placeholder="http://192.168.31.98:8420"
                 placeholderTextColor={colors.faint}
-                style={[styles.input, styles.tokenInput]}
-                secureTextEntry={!revealToken}
+                style={styles.input}
                 autoCapitalize="none"
                 autoCorrect={false}
+                keyboardType="url"
+                inputMode="url"
               />
-              <Pressable onPress={() => setRevealToken((value) => !value)} hitSlop={8}>
-                <Ionicons name={revealToken ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.muted} />
-              </Pressable>
             </View>
-          </View>
 
-          <Pressable
-            onPress={() => void testConnection()}
-            disabled={testing}
-            style={({ pressed }) => [styles.testButton, (pressed || testing) && styles.pressed]}
-          >
-            {testing ? (
-              <ActivityIndicator size="small" color={colors.text} />
-            ) : (
-              <Ionicons name="pulse-outline" size={16} color={colors.text} />
-            )}
-            <Text style={styles.testButtonText}>测试连接</Text>
-          </Pressable>
+            <View style={styles.presetRow}>
+              {BASE_URL_PRESETS.map((preset) => {
+                const selected = normalizedBaseUrl === preset.url;
+                return (
+                  <SpringPressable
+                    key={preset.url}
+                    onPress={() => applyPreset(preset.url)}
+                    scaleTo={0.96}
+                    style={styles.presetFlex}
+                    contentStyle={[styles.presetButton, selected && styles.presetButtonSelected]}
+                  >
+                    <Text style={[styles.presetLabel, selected && styles.presetLabelSelected]}>{preset.label}</Text>
+                    <Text style={styles.presetHint} numberOfLines={1}>
+                      {preset.url}
+                    </Text>
+                  </SpringPressable>
+                );
+              })}
+            </View>
 
-          {health ? (
-            <View style={styles.resultCard}>
-              <View style={styles.resultHeader}>
-                <View style={styles.resultDot} />
-                <Text style={styles.resultTitle}>{health.app || '剪藏 API'} 已连通</Text>
+            <View style={styles.field}>
+              <Text style={styles.label}>API Token（可选）</Text>
+              <View style={styles.tokenRow}>
+                <TextInput
+                  value={token}
+                  onChangeText={setToken}
+                  placeholder="后端开启鉴权时填写"
+                  placeholderTextColor={colors.faint}
+                  style={[styles.input, styles.tokenInput]}
+                  secureTextEntry={!revealToken}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Pressable
+                  onPress={() => setRevealToken((value) => !value)}
+                  hitSlop={8}
+                  style={styles.eyeButton}
+                >
+                  <Ionicons name={revealToken ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.muted} />
+                </Pressable>
               </View>
-              <Text style={styles.resultLine}>状态：{health.status}</Text>
-              <Text style={styles.resultLine}>AI 提炼：{health.ai_enabled ? '已启用' : '未启用'}</Text>
-              <Text style={styles.resultLine}>接口鉴权：{health.auth_enabled ? '已开启' : '未开启'}</Text>
-            </View>
-          ) : null}
-
-          {testError ? (
-            <View style={[styles.resultCard, styles.resultCardError]}>
-              <View style={styles.resultHeader}>
-                <View style={[styles.resultDot, { backgroundColor: colors.danger }]} />
-                <Text style={styles.resultTitle}>连接失败</Text>
-              </View>
-              <Text style={styles.resultLine}>{testError}</Text>
-            </View>
-          ) : null}
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>每日回顾提醒</Text>
-
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text style={styles.switchLabel}>每天提醒我回顾</Text>
-              <Text style={styles.switchHint}>
-                {reminderEnabled
-                  ? `每天 ${formatClock(hour, minute)} 推送一条本地提醒`
-                  : '开启后会在设定时间收到本地通知'}
-              </Text>
-            </View>
-            <Switch
-              value={reminderEnabled}
-              onValueChange={setReminderEnabled}
-              trackColor={{ false: colors.surfaceRaised, true: `${colors.accent}88` }}
-              thumbColor={reminderEnabled ? colors.accent : '#D8DCE5'}
-            />
-          </View>
-
-          <View style={[styles.timeRow, !reminderEnabled && styles.disabled]}>
-            <View style={styles.timeColumn}>
-              <Pressable
-                onPress={() => setHour((value) => (value + 1) % 24)}
-                disabled={!reminderEnabled}
-                hitSlop={6}
-              >
-                <Ionicons name="chevron-up" size={18} color={colors.muted} />
-              </Pressable>
-              <Text style={styles.timeValue}>{formatClock(hour, minute).slice(0, 2)}</Text>
-              <Pressable
-                onPress={() => setHour((value) => (value + 23) % 24)}
-                disabled={!reminderEnabled}
-                hitSlop={6}
-              >
-                <Ionicons name="chevron-down" size={18} color={colors.muted} />
-              </Pressable>
             </View>
 
-            <Text style={styles.timeColon}>:</Text>
+            <SpringPressable
+              onPress={() => void testConnection()}
+              disabled={testing}
+              scaleTo={0.97}
+              contentStyle={[styles.testButton, testing && styles.pressed]}
+            >
+              {testing ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : (
+                <Ionicons name="pulse-outline" size={16} color={colors.textSecondary} />
+              )}
+              <Text style={styles.testButtonText}>测试连接</Text>
+            </SpringPressable>
 
-            <View style={styles.timeColumn}>
-              <Pressable
-                onPress={() => setMinute((value) => (value + 5) % 60)}
-                disabled={!reminderEnabled}
-                hitSlop={6}
-              >
-                <Ionicons name="chevron-up" size={18} color={colors.muted} />
-              </Pressable>
-              <Text style={styles.timeValue}>{formatClock(hour, minute).slice(3, 5)}</Text>
-              <Pressable
-                onPress={() => setMinute((value) => (value + 55) % 60)}
-                disabled={!reminderEnabled}
-                hitSlop={6}
-              >
-                <Ionicons name="chevron-down" size={18} color={colors.muted} />
-              </Pressable>
-            </View>
+            {health ? (
+              <FadeSlideIn distance={8} duration={220}>
+                <View style={styles.resultCard}>
+                  <View style={styles.resultHeader}>
+                    <View style={styles.resultDot} />
+                    <Text style={styles.resultTitle}>{health.app || '剪藏 API'} 已连通</Text>
+                  </View>
+                  <Text style={styles.resultLine}>状态：{health.status}</Text>
+                  <Text style={styles.resultLine}>AI 提炼：{health.ai_enabled ? '已启用' : '未启用'}</Text>
+                  <Text style={styles.resultLine}>接口鉴权：{health.auth_enabled ? '已开启' : '未开启'}</Text>
+                </View>
+              </FadeSlideIn>
+            ) : null}
 
-            <View style={styles.timeHint}>
-              <Text style={styles.timeHintText}>小时 / 分钟</Text>
-              <Text style={styles.timeHintText}>
-                {scheduled && reminderEnabled ? '提醒已注册到系统' : '保存后生效'}
-              </Text>
-            </View>
+            {testError ? (
+              <FadeSlideIn distance={8} duration={220}>
+                <View style={[styles.resultCard, styles.resultCardError]}>
+                  <View style={styles.resultHeader}>
+                    <View style={[styles.resultDot, { backgroundColor: colors.danger }]} />
+                    <Text style={styles.resultTitle}>连接失败</Text>
+                  </View>
+                  <Text style={styles.resultLine}>{testError}</Text>
+                </View>
+              </FadeSlideIn>
+            ) : null}
           </View>
         </View>
 
-        <Pressable
+        <View style={styles.group}>
+          <Text style={styles.groupTitle}>每日回顾提醒</Text>
+          <View style={styles.section}>
+            <View style={styles.switchRow}>
+              <View style={styles.switchText}>
+                <Text style={styles.switchLabel}>每天提醒我回顾</Text>
+                <Text style={styles.switchHint}>
+                  {reminderEnabled
+                    ? `每天 ${formatClock(hour, minute)} 推送一条本地提醒`
+                    : '开启后会在设定时间收到本地通知'}
+                </Text>
+              </View>
+              <Switch
+                value={reminderEnabled}
+                onValueChange={setReminderEnabled}
+                trackColor={{ false: colors.surfaceRaised, true: colors.accentBorder }}
+                thumbColor={reminderEnabled ? colors.accent : '#C5CCD9'}
+              />
+            </View>
+
+            <View style={[styles.timeRow, !reminderEnabled && styles.disabled]}>
+              <View style={styles.timeColumn}>
+                <SpringPressable
+                  onPress={() => setHour((value) => (value + 1) % 24)}
+                  disabled={!reminderEnabled}
+                  hitSlop={6}
+                  scaleTo={0.86}
+                  contentStyle={styles.stepButton}
+                >
+                  <Ionicons name="chevron-up" size={16} color={colors.textSecondary} />
+                </SpringPressable>
+                <Text style={styles.timeValue}>{formatClock(hour, minute).slice(0, 2)}</Text>
+                <SpringPressable
+                  onPress={() => setHour((value) => (value + 23) % 24)}
+                  disabled={!reminderEnabled}
+                  hitSlop={6}
+                  scaleTo={0.86}
+                  contentStyle={styles.stepButton}
+                >
+                  <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+                </SpringPressable>
+              </View>
+
+              <Text style={styles.timeColon}>:</Text>
+
+              <View style={styles.timeColumn}>
+                <SpringPressable
+                  onPress={() => setMinute((value) => (value + 5) % 60)}
+                  disabled={!reminderEnabled}
+                  hitSlop={6}
+                  scaleTo={0.86}
+                  contentStyle={styles.stepButton}
+                >
+                  <Ionicons name="chevron-up" size={16} color={colors.textSecondary} />
+                </SpringPressable>
+                <Text style={styles.timeValue}>{formatClock(hour, minute).slice(3, 5)}</Text>
+                <SpringPressable
+                  onPress={() => setMinute((value) => (value + 55) % 60)}
+                  disabled={!reminderEnabled}
+                  hitSlop={6}
+                  scaleTo={0.86}
+                  contentStyle={styles.stepButton}
+                >
+                  <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+                </SpringPressable>
+              </View>
+
+              <View style={styles.timeHint}>
+                <Text style={styles.timeHintPrimary}>小时 / 分钟</Text>
+                <Text style={styles.timeHintText}>
+                  {scheduled && reminderEnabled ? '提醒已注册到系统' : '保存后生效'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        <SpringPressable
           onPress={() => void save()}
           disabled={saving || !dirty}
-          style={({ pressed }) => [
-            styles.saveButton,
-            (!dirty || saving) && styles.saveButtonDisabled,
-            pressed && dirty && styles.pressed,
-          ]}
+          scaleTo={0.97}
+          contentStyle={[styles.saveButton, (!dirty || saving) && styles.saveButtonDisabled]}
         >
           {saving ? (
-            <ActivityIndicator size="small" color="#1A0D08" />
+            <ActivityIndicator size="small" color={colors.onAccent} />
           ) : (
             <>
-              <Ionicons name="save-outline" size={17} color="#1A0D08" />
+              <Ionicons name="save-outline" size={17} color={colors.onAccent} />
               <Text style={styles.saveText}>{dirty ? '保存设置' : '设置已是最新'}</Text>
             </>
           )}
-        </Pressable>
+        </SpringPressable>
 
         <View style={styles.about}>
           <Text style={styles.aboutTitle}>剪藏 · v{appVersion}</Text>
@@ -359,36 +378,41 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   content: {
-    padding: spacing.lg,
-    paddingBottom: spacing.xxl,
-    gap: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: 40,
+    gap: 22,
   },
   header: {
     gap: 4,
   },
   title: {
     color: colors.text,
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    letterSpacing: -0.3,
   },
   subtitle: {
     color: colors.muted,
+    fontSize: 12.5,
+  },
+  group: {
+    gap: 8,
+  },
+  groupTitle: {
+    color: colors.muted,
     fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    marginLeft: 4,
   },
   section: {
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+    borderRadius: radius.xl,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSubtle,
     padding: spacing.lg,
-    gap: spacing.md,
-  },
-  sectionTitle: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+    gap: 14,
   },
   field: {
     gap: 6,
@@ -397,16 +421,17 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 12,
     fontWeight: '600',
+    marginLeft: 2,
   },
   input: {
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.bg,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 14,
     paddingVertical: 11,
     color: colors.text,
-    fontSize: 13,
+    fontSize: 14,
   },
   tokenRow: {
     flexDirection: 'row',
@@ -416,26 +441,36 @@ const styles = StyleSheet.create({
   tokenInput: {
     flex: 1,
   },
+  eyeButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
+    backgroundColor: colors.glass,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   presetRow: {
     flexDirection: 'row',
     gap: spacing.sm,
   },
-  presetButton: {
+  presetFlex: {
     flex: 1,
-    backgroundColor: colors.surfaceAlt,
+  },
+  presetButton: {
+    backgroundColor: colors.bg,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
+    borderColor: colors.borderSubtle,
+    padding: 12,
     gap: 4,
   },
   presetButtonSelected: {
-    borderColor: `${colors.accent}77`,
+    borderColor: colors.accentBorder,
     backgroundColor: colors.accentSoft,
   },
   presetLabel: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   presetLabelSelected: {
@@ -443,35 +478,35 @@ const styles = StyleSheet.create({
   },
   presetHint: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 10.5,
   },
   testButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    backgroundColor: colors.surfaceAlt,
+    gap: 7,
+    backgroundColor: colors.surfaceElevated,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.borderStrong,
-    paddingVertical: 11,
+    borderColor: colors.border,
+    paddingVertical: 12,
   },
   testButtonText: {
     color: colors.text,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
   },
   resultCard: {
     backgroundColor: colors.successSoft,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: `${colors.success}44`,
+    borderColor: `${colors.success}3D`,
     padding: spacing.md,
     gap: 5,
   },
   resultCardError: {
     backgroundColor: colors.dangerSoft,
-    borderColor: `${colors.danger}44`,
+    borderColor: `${colors.danger}3D`,
   },
   resultHeader: {
     flexDirection: 'row',
@@ -486,13 +521,13 @@ const styles = StyleSheet.create({
   },
   resultTitle: {
     color: colors.text,
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   resultLine: {
     color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
   },
   switchRow: {
     flexDirection: 'row',
@@ -505,90 +540,106 @@ const styles = StyleSheet.create({
   },
   switchLabel: {
     color: colors.text,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
   },
   switchHint: {
     color: colors.muted,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
   },
   timeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.md,
+    gap: 14,
+    backgroundColor: colors.bg,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.border,
-    paddingVertical: spacing.md,
+    borderColor: colors.borderSubtle,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.md,
   },
   disabled: {
-    opacity: 0.45,
+    opacity: 0.42,
   },
   timeColumn: {
     alignItems: 'center',
-    gap: 2,
+    gap: 6,
+  },
+  stepButton: {
+    width: 34,
+    height: 26,
+    borderRadius: radius.sm,
+    backgroundColor: colors.glass,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   timeValue: {
     color: colors.text,
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
-    minWidth: 46,
+    minWidth: 48,
     textAlign: 'center',
   },
   timeColon: {
-    color: colors.muted,
+    color: colors.faint,
     fontSize: 22,
     fontWeight: '700',
-    marginTop: 2,
   },
   timeHint: {
     gap: 3,
     marginLeft: spacing.sm,
   },
+  timeHintPrimary: {
+    color: colors.muted,
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
   timeHintText: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 10.5,
   },
   saveButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 7,
     backgroundColor: colors.accent,
-    borderRadius: radius.md,
-    paddingVertical: 14,
+    borderRadius: radius.lg,
+    paddingVertical: 15,
+    ...elevation.accent,
   },
   saveButtonDisabled: {
-    opacity: 0.4,
+    opacity: 0.34,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   saveText: {
-    color: '#1A0D08',
-    fontSize: 14,
+    color: colors.onAccent,
+    fontSize: 15,
     fontWeight: '800',
   },
   pressed: {
-    opacity: 0.8,
+    opacity: 0.78,
   },
   about: {
-    gap: 5,
+    gap: 6,
     paddingHorizontal: spacing.xs,
   },
   aboutTitle: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.muted,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   aboutText: {
     color: colors.faint,
-    fontSize: 11,
-    lineHeight: 17,
+    fontSize: 11.5,
+    lineHeight: 18,
   },
   aboutMuted: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 10.5,
   },
 });

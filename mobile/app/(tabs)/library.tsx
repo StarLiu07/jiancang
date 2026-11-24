@@ -3,6 +3,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   Pressable,
   RefreshControl,
@@ -16,10 +17,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { api, pickErrorMessage } from '../../src/api/client';
 import { ClipCard } from '../../src/components/ClipCard';
+import { FadeSlideIn, MOTION, SkeletonList, SpringPressable } from '../../src/components/Motion';
 import { QuickAddModal, type QuickAddPayload } from '../../src/components/QuickAddModal';
 import { useToast } from '../../src/components/Toast';
 import { useSettings } from '../../src/store/settings';
-import { colors, platformMeta, radius, spacing } from '../../src/theme';
+import { colors, elevation, platformMeta, radius, spacing } from '../../src/theme';
 import type { ClipSummary, Platform, ReviewState, TagItem } from '../../src/types';
 
 const PAGE_SIZE = 20;
@@ -39,6 +41,7 @@ export default function LibraryScreen() {
 
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   const [platform, setPlatform] = useState<Platform | 'all'>('all');
   const [reviewState, setReviewState] = useState<Extract<ReviewState, 'active' | 'archived'>>('active');
   const [tag, setTag] = useState<string | null>(null);
@@ -55,8 +58,18 @@ export default function LibraryScreen() {
   const [quickAddError, setQuickAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
+  const [segmentWidth, setSegmentWidth] = useState(0);
+  const segmentSlide = useRef(new Animated.Value(0)).current;
+
   const offsetRef = useRef(0);
   const requestRef = useRef(0);
+
+  useEffect(() => {
+    Animated.spring(segmentSlide, {
+      toValue: reviewState === 'active' ? 0 : 1,
+      ...MOTION.springSnappy,
+    }).start();
+  }, [reviewState, segmentSlide]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 350);
@@ -164,6 +177,10 @@ export default function LibraryScreen() {
   };
 
   const activeFilterCount = (platform === 'all' ? 0 : 1) + (tag ? 1 : 0) + (debouncedQuery ? 1 : 0);
+  const pillTranslateX = segmentSlide.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, segmentWidth],
+  });
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -175,27 +192,43 @@ export default function LibraryScreen() {
               {loading ? '正在同步…' : `共 ${total} 条${activeFilterCount ? ' · 已筛选' : ''}`}
             </Text>
           </View>
-          <View style={styles.segmented}>
-            <Pressable
-              onPress={() => setReviewState('active')}
-              style={[styles.segment, reviewState === 'active' && styles.segmentActive]}
-            >
+
+          <View
+            style={styles.segmented}
+            onLayout={(e) => {
+              const inner = Math.max(0, e.nativeEvent.layout.width - 6);
+              setSegmentWidth(inner / 2);
+            }}
+          >
+            {segmentWidth > 0 ? (
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.segmentIndicator,
+                  { width: segmentWidth, transform: [{ translateX: pillTranslateX }] },
+                ]}
+              />
+            ) : null}
+            <Pressable onPress={() => setReviewState('active')} style={styles.segment}>
               <Text style={[styles.segmentText, reviewState === 'active' && styles.segmentTextActive]}>在库</Text>
             </Pressable>
-            <Pressable
-              onPress={() => setReviewState('archived')}
-              style={[styles.segment, reviewState === 'archived' && styles.segmentActive]}
-            >
+            <Pressable onPress={() => setReviewState('archived')} style={styles.segment}>
               <Text style={[styles.segmentText, reviewState === 'archived' && styles.segmentTextActive]}>已归档</Text>
             </Pressable>
           </View>
         </View>
 
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={16} color={colors.faint} />
+        <View style={[styles.searchBar, searchFocused && styles.searchBarFocused]}>
+          <Ionicons
+            name="search"
+            size={16}
+            color={searchFocused ? colors.textSecondary : colors.faint}
+          />
           <TextInput
             value={query}
             onChangeText={setQuery}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
             placeholder="搜标题、摘要、标签…"
             placeholderTextColor={colors.faint}
             style={styles.searchInput}
@@ -206,7 +239,7 @@ export default function LibraryScreen() {
           />
           {query ? (
             <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={16} color={colors.faint} />
+              <Ionicons name="close-circle" size={16} color={colors.muted} />
             </Pressable>
           ) : null}
         </View>
@@ -221,14 +254,15 @@ export default function LibraryScreen() {
             const selected = platform === filter.key;
             const dotColor = filter.key === 'all' ? colors.textSecondary : platformMeta[filter.key].color;
             return (
-              <Pressable
+              <SpringPressable
                 key={filter.key}
                 onPress={() => setPlatform(filter.key)}
-                style={[styles.chip, selected && styles.chipSelected]}
+                scaleTo={0.94}
+                contentStyle={[styles.chip, selected && styles.chipSelected]}
               >
                 {filter.key !== 'all' ? <View style={[styles.chipDot, { backgroundColor: dotColor }]} /> : null}
                 <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{filter.label}</Text>
-              </Pressable>
+              </SpringPressable>
             );
           })}
         </ScrollView>
@@ -243,16 +277,17 @@ export default function LibraryScreen() {
             {tags.map((item) => {
               const selected = tag === item.name;
               return (
-                <Pressable
+                <SpringPressable
                   key={item.name}
                   onPress={() => setTag(selected ? null : item.name)}
-                  style={[styles.tagChip, selected && styles.tagChipSelected]}
+                  scaleTo={0.94}
+                  contentStyle={[styles.tagChip, selected && styles.tagChipSelected]}
                 >
                   <Text style={[styles.tagText, selected && styles.tagTextSelected]}>
                     #{item.name}
-                    <Text style={styles.tagCount}> {item.count}</Text>
+                    <Text style={[styles.tagCount, selected && styles.tagCountSelected]}> {item.count}</Text>
                   </Text>
-                </Pressable>
+                </SpringPressable>
               );
             })}
           </ScrollView>
@@ -260,15 +295,17 @@ export default function LibraryScreen() {
       </View>
 
       {error ? (
-        <View style={styles.errorBanner}>
-          <Ionicons name="alert-circle-outline" size={15} color={colors.danger} />
-          <Text style={styles.errorText} numberOfLines={2}>
-            {error}
-          </Text>
-          <Pressable onPress={() => void loadPage('reset')} hitSlop={6}>
-            <Text style={styles.errorRetry}>重试</Text>
-          </Pressable>
-        </View>
+        <FadeSlideIn distance={8}>
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={15} color={colors.danger} />
+            <Text style={styles.errorText} numberOfLines={2}>
+              {error}
+            </Text>
+            <Pressable onPress={() => void loadPage('reset')} hitSlop={6}>
+              <Text style={styles.errorRetry}>重试</Text>
+            </Pressable>
+          </View>
+        </FadeSlideIn>
       ) : null}
 
       <FlatList
@@ -283,7 +320,7 @@ export default function LibraryScreen() {
             onRefresh={refreshAll}
             tintColor={colors.accent}
             colors={[colors.accent]}
-            progressBackgroundColor={colors.surface}
+            progressBackgroundColor={colors.surfaceElevated}
           />
         }
         onEndReached={handleEndReached}
@@ -292,31 +329,30 @@ export default function LibraryScreen() {
         keyboardDismissMode="on-drag"
         ListEmptyComponent={
           loading ? (
-            <View style={styles.emptyBox}>
-              <ActivityIndicator color={colors.accent} />
-            </View>
+            <SkeletonList count={4} />
           ) : (
-            <View style={styles.emptyBox}>
+            <FadeSlideIn distance={12} style={styles.emptyBox}>
               <View style={styles.emptyIcon}>
-                <Ionicons name="albums-outline" size={30} color={colors.faint} />
+                <Ionicons name="albums-outline" size={28} color={colors.muted} />
               </View>
               <Text style={styles.emptyTitle}>{activeFilterCount ? '没有匹配的剪藏' : '收藏库还是空的'}</Text>
               <Text style={styles.emptyText}>
                 {activeFilterCount ? '换个关键词或清掉筛选试试。' : '从小红书 / 公众号 / X 分享，或点右下角 + 手动剪藏。'}
               </Text>
               {activeFilterCount ? (
-                <Pressable
+                <SpringPressable
                   onPress={() => {
                     setQuery('');
                     setPlatform('all');
                     setTag(null);
                   }}
-                  style={styles.emptyButton}
+                  scaleTo={0.95}
+                  contentStyle={styles.emptyButton}
                 >
                   <Text style={styles.emptyButtonText}>清空筛选</Text>
-                </Pressable>
+                </SpringPressable>
               ) : null}
-            </View>
+            </FadeSlideIn>
           )
         }
         ListFooterComponent={
@@ -325,21 +361,23 @@ export default function LibraryScreen() {
               <ActivityIndicator size="small" color={colors.muted} />
             </View>
           ) : items.length && items.length >= total ? (
-            <Text style={styles.footerEnd}>已经到底了</Text>
+            <Text style={styles.footerEnd}>已展示全部 {total} 条</Text>
           ) : null
         }
       />
 
-      <Pressable
+      <SpringPressable
         onPress={() => {
           setQuickAddError(null);
           setQuickAddVisible(true);
         }}
-        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+        scaleTo={0.9}
+        style={styles.fabAnchor}
+        contentStyle={styles.fab}
         accessibilityLabel="快速剪藏"
       >
-        <Ionicons name="add" size={26} color="#1A0D08" />
-      </Pressable>
+        <Ionicons name="add" size={26} color={colors.onAccent} />
+      </SpringPressable>
 
       <QuickAddModal
         visible={quickAddVisible}
@@ -360,7 +398,10 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
-    gap: spacing.md,
+    paddingBottom: spacing.md,
+    gap: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.borderSubtle,
   },
   titleRow: {
     flexDirection: 'row',
@@ -369,77 +410,96 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   titleText: {
-    gap: 3,
+    gap: 2,
   },
   title: {
     color: colors.text,
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    letterSpacing: -0.3,
   },
   subtitle: {
-    color: colors.muted,
+    color: colors.faint,
     fontSize: 12,
+    fontWeight: '500',
   },
   segmented: {
+    position: 'relative',
     flexDirection: 'row',
+    width: 132,
     backgroundColor: colors.surface,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSubtle,
     padding: 3,
   },
+  segmentIndicator: {
+    position: 'absolute',
+    top: 3,
+    bottom: 3,
+    left: 3,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
   segment: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
     borderRadius: radius.pill,
   },
-  segmentActive: {
-    backgroundColor: colors.surfaceRaised,
-  },
   segmentText: {
-    color: colors.muted,
-    fontSize: 11,
+    color: colors.faint,
+    fontSize: 12,
     fontWeight: '600',
   },
   segmentTextActive: {
     color: colors.text,
+    fontWeight: '700',
   },
+
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
     backgroundColor: colors.surface,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    height: 42,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 14,
+    height: 44,
+  },
+  searchBarFocused: {
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceAlt,
   },
   searchInput: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
+    fontSize: 14,
     padding: 0,
   },
+
   chipRow: {
-    gap: spacing.sm,
+    gap: 7,
     paddingRight: spacing.lg,
   },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
     backgroundColor: colors.surface,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 12,
     paddingVertical: 6,
   },
   chipSelected: {
     backgroundColor: colors.accentSoft,
-    borderColor: `${colors.accent}66`,
+    borderColor: colors.accentBorder,
   },
   chipDot: {
     width: 6,
@@ -447,41 +507,47 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   chipText: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.muted,
+    fontSize: 12.5,
     fontWeight: '600',
   },
   chipTextSelected: {
     color: colors.accent,
+    fontWeight: '700',
   },
+
   tagRow: {
-    gap: spacing.sm,
+    gap: 4,
     paddingRight: spacing.lg,
+    marginTop: -2,
   },
   tagChip: {
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.pill,
-    paddingHorizontal: 10,
+    borderRadius: radius.sm,
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: 'transparent',
   },
   tagChipSelected: {
-    borderColor: `${colors.accent}66`,
-    backgroundColor: colors.accentSoft,
+    backgroundColor: colors.glassStrong,
   },
   tagText: {
-    color: colors.textSecondary,
-    fontSize: 11,
+    color: colors.faint,
+    fontSize: 12,
+    fontWeight: '500',
   },
   tagTextSelected: {
-    color: colors.accent,
+    color: colors.text,
     fontWeight: '700',
   },
   tagCount: {
     color: colors.faint,
-    fontSize: 10,
+    fontSize: 10.5,
+    opacity: 0.75,
   },
+  tagCountSelected: {
+    color: colors.accent,
+    opacity: 1,
+  },
+
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -491,73 +557,74 @@ const styles = StyleSheet.create({
     backgroundColor: colors.dangerSoft,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: `${colors.danger}44`,
+    borderColor: `${colors.danger}40`,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
   errorText: {
     flex: 1,
     color: colors.textSecondary,
-    fontSize: 11,
+    fontSize: 12,
   },
   errorRetry: {
     color: colors.danger,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '800',
   },
+
   listContent: {
-    padding: spacing.lg,
-    paddingBottom: 120,
-    gap: 0,
+    paddingHorizontal: spacing.lg,
+    paddingTop: 14,
+    paddingBottom: 112,
   },
   listEmptyContent: {
     flexGrow: 1,
   },
   separator: {
-    height: spacing.sm,
+    height: 10,
   },
   emptyBox: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
-    paddingVertical: 60,
-    paddingHorizontal: spacing.lg,
+    paddingVertical: 70,
+    paddingHorizontal: spacing.xl,
   },
   emptyIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderSubtle,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.xs,
   },
   emptyTitle: {
     color: colors.text,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
   },
   emptyText: {
     color: colors.muted,
-    fontSize: 12,
-    lineHeight: 19,
+    fontSize: 13,
+    lineHeight: 20,
     textAlign: 'center',
   },
   emptyButton: {
     marginTop: spacing.sm,
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.surfaceElevated,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: spacing.lg,
-    paddingVertical: 8,
+    paddingVertical: 9,
   },
   emptyButtonText: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.text,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   footerLoading: {
@@ -566,28 +633,25 @@ const styles = StyleSheet.create({
   },
   footerEnd: {
     color: colors.faint,
-    fontSize: 11,
+    fontSize: 11.5,
     textAlign: 'center',
-    paddingVertical: spacing.lg,
+    paddingVertical: spacing.xl,
   },
-  fab: {
+
+  fabAnchor: {
     position: 'absolute',
     right: spacing.lg,
     bottom: spacing.xl,
+  },
+  fab: {
     width: 56,
     height: 56,
     borderRadius: 28,
     backgroundColor: colors.accent,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-  fabPressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.96 }],
+    ...elevation.accent,
   },
 });

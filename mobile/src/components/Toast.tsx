@@ -3,7 +3,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors, radius, spacing } from '../theme';
+import { colors, elevation, radius, spacing } from '../theme';
+import { MOTION } from './Motion';
 
 export type ToastKind = 'success' | 'info' | 'error';
 
@@ -28,6 +29,8 @@ const KIND_STYLE: Record<ToastKind, { color: string; icon: keyof typeof Ionicons
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<ToastState | null>(null);
   const opacity = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(16)).current;
+  const scale = useRef(new Animated.Value(0.94)).current;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const insets = useSafeAreaInsets();
 
@@ -40,16 +43,49 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!toast) return;
     opacity.setValue(0);
-    Animated.timing(opacity, { toValue: 1, duration: 160, useNativeDriver: true }).start();
+    translateY.setValue(16);
+    scale.setValue(0.94);
+
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 180,
+        easing: MOTION.easeOut,
+        useNativeDriver: true,
+      }),
+      Animated.spring(translateY, { toValue: 0, ...MOTION.springPop }),
+      Animated.spring(scale, { toValue: 1, ...MOTION.springPop }),
+    ]).start();
+
     hideTimer.current = setTimeout(() => {
-      Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => {
+      Animated.parallel([
+        Animated.timing(opacity, {
+          toValue: 0,
+          duration: 180,
+          easing: MOTION.easeIn,
+          useNativeDriver: true,
+        }),
+        Animated.timing(translateY, {
+          toValue: 10,
+          duration: 180,
+          easing: MOTION.easeIn,
+          useNativeDriver: true,
+        }),
+        Animated.timing(scale, {
+          toValue: 0.96,
+          duration: 180,
+          easing: MOTION.easeIn,
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
         if (finished) setToast(null);
       });
-    }, 2600);
+    }, 2500);
+
     return () => {
       if (hideTimer.current) clearTimeout(hideTimer.current);
     };
-  }, [toast, opacity]);
+  }, [toast, opacity, translateY, scale]);
 
   const value = useMemo<ToastContextValue>(() => ({ show }), [show]);
   const kindStyle = toast ? KIND_STYLE[toast.kind] : KIND_STYLE.info;
@@ -60,9 +96,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {toast ? (
         <Animated.View
           pointerEvents="none"
-          style={[styles.wrap, { opacity, bottom: insets.bottom + 84 }]}
+          style={[
+            styles.wrap,
+            {
+              bottom: insets.bottom + 84,
+              opacity,
+              transform: [{ translateY }, { scale }],
+            },
+          ]}
         >
-          <View style={[styles.toast, { borderColor: `${kindStyle.color}55` }]}>
+          <View style={[styles.toast, { borderColor: `${kindStyle.color}40` }]}>
             <Ionicons name={kindStyle.icon} size={18} color={kindStyle.color} />
             <Text style={styles.text} numberOfLines={3}>
               {toast.message}
@@ -95,17 +138,15 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     borderRadius: radius.pill,
     borderWidth: 1,
-    paddingVertical: 10,
+    borderTopColor: colors.rimTop,
+    paddingVertical: 11,
     paddingHorizontal: spacing.lg,
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
+    ...elevation.floating,
   },
   text: {
     color: colors.text,
-    fontSize: 13,
+    fontSize: 13.5,
+    fontWeight: '600',
     lineHeight: 19,
     flexShrink: 1,
   },
