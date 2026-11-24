@@ -8,9 +8,19 @@ export interface AppSettings {
   reminderEnabled: boolean;
   reminderHour: number;
   reminderMinute: number;
+  /** OpenAI-compatible LLM endpoint for on-device AI enrichment ('' = off). */
+  llmBaseUrl: string;
+  llmApiKey: string;
+  llmModel: string;
+  /** Master switch for talking to the NUC at all. */
+  syncEnabled: boolean;
+  /** Silent background sync on mount / app foreground. */
+  autoSync: boolean;
 }
 
 export const DEFAULT_BASE_URL = 'http://192.168.31.98:8420';
+
+export const DEFAULT_LLM_MODEL = 'deepseek/deepseek-v4.1-flash';
 
 export const BASE_URL_PRESETS: { label: string; hint: string; url: string }[] = [
   { label: '家里局域网', hint: 'NUC · 同一 WiFi 下最快', url: 'http://192.168.31.98:8420' },
@@ -23,6 +33,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   reminderEnabled: false,
   reminderHour: 21,
   reminderMinute: 0,
+  llmBaseUrl: '',
+  llmApiKey: '',
+  llmModel: DEFAULT_LLM_MODEL,
+  syncEnabled: true,
+  autoSync: true,
 };
 
 const SETTINGS_KEY = 'jiancang:settings:v1';
@@ -34,25 +49,42 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
   return Math.min(max, Math.max(min, Math.round(num)));
 }
 
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Coerce any stored JSON shape into `AppSettings`.
+ *
+ * `baseUrl` is intentionally allowed to be empty: only a fresh install (no
+ * stored JSON at all) receives `DEFAULT_BASE_URL`, so clearing the field in
+ * settings must survive a reload.
+ */
 function sanitize(raw: unknown): AppSettings {
   const value = (raw ?? {}) as Partial<Record<keyof AppSettings, unknown>>;
-  const baseUrl = typeof value.baseUrl === 'string' && value.baseUrl.trim() ? normalizeBaseUrl(value.baseUrl) : DEFAULT_SETTINGS.baseUrl;
+  const llmModel = text(value.llmModel);
   return {
-    baseUrl: baseUrl || DEFAULT_SETTINGS.baseUrl,
-    token: typeof value.token === 'string' ? value.token.trim() : '',
+    baseUrl: typeof value.baseUrl === 'string' ? normalizeBaseUrl(value.baseUrl) : '',
+    token: text(value.token),
     reminderEnabled: value.reminderEnabled === true,
     reminderHour: clampInt(value.reminderHour, 0, 23, DEFAULT_SETTINGS.reminderHour),
     reminderMinute: clampInt(value.reminderMinute, 0, 59, DEFAULT_SETTINGS.reminderMinute),
+    llmBaseUrl: typeof value.llmBaseUrl === 'string' ? normalizeBaseUrl(value.llmBaseUrl) : '',
+    llmApiKey: text(value.llmApiKey),
+    llmModel: llmModel || DEFAULT_LLM_MODEL,
+    syncEnabled: value.syncEnabled !== false,
+    autoSync: value.autoSync !== false,
   };
 }
 
 export async function loadSettings(): Promise<AppSettings> {
   try {
     const stored = await AsyncStorage.getItem(SETTINGS_KEY);
-    if (!stored) return DEFAULT_SETTINGS;
-    return sanitize(JSON.parse(stored));
+    if (!stored) return { ...DEFAULT_SETTINGS };
+    const parsed: unknown = JSON.parse(stored);
+    return sanitize(parsed);
   } catch {
-    return DEFAULT_SETTINGS;
+    return { ...DEFAULT_SETTINGS };
   }
 }
 

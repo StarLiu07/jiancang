@@ -11,11 +11,31 @@ import type {
   ReviewActionInput,
   ReviewActionResponse,
   ReviewTodayResponse,
+  SyncMediaUploadResponse,
+  SyncPullResponse,
+  SyncPushRequest,
+  SyncPushResponse,
   TagListResponse,
 } from '../types';
 import { joinApiPath, normalizeBaseUrl } from '../utils/url';
 
 const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_HEALTH_TIMEOUT_MS = 8000;
+const SYNC_PULL_LIMIT = 100;
+/** Device-local URIs that must never be routed through the backend. */
+const LOCAL_URI_RE = /^(?:file|content|data):/i;
+
+type FileSystemModule = typeof import('expo-file-system');
+
+let cachedFileSystem: FileSystemModule | null = null;
+
+/** Lazily load expo-file-system so pure helpers stay importable in plain Node. */
+function loadFileSystem(): FileSystemModule {
+  if (!cachedFileSystem) {
+    cachedFileSystem = require('expo-file-system') as FileSystemModule;
+  }
+  return cachedFileSystem;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -37,7 +57,8 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-function authHeaders(config: ApiConfig): Record<string, string> {
+/** Bearer header for the configured token (empty object when no token). */
+export function buildAuthHeaders(config: ApiConfig): Record<string, string> {
   const token = config.token.trim();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
@@ -67,16 +88,12 @@ function describeDetail(detail: unknown): string {
   return '';
 }
 
-async function readErrorDetail(response: Response): Promise<string> {
-  let raw = '';
+/** Turn an HTTP error body into a human readable detail line. */
+function describeBodyDetail(raw: string, status: number): string {
+  const text = (raw || '').trim();
+  if (!text) return `请求失败（HTTP ${status}）`;
   try {
-    raw = await response.text();
-  } catch {
-    return `请求失败（HTTP ${response.status}）`;
-  }
-  if (!raw) return `请求失败（HTTP ${response.status}）`;
-  try {
-    const payload = JSON.parse(raw) as unknown;
+    const payload = JSON.parse(text) as unknown;
     if (payload && typeof payload === 'object') {
       if ('detail' in payload) {
         const detail = describeDetail((payload as { detail?: unknown }).detail);
@@ -89,7 +106,17 @@ async function readErrorDetail(response: Response): Promise<string> {
   } catch {
     // Not JSON: fall through and use raw text.
   }
-  return raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
+async function readErrorDetail(response: Response): Promise<string> {
+  let raw = '';
+  try {
+    raw = await response.text();
+  } catch {
+    return `请求失败（HTTP ${response.status}）`;
+  }
+  return describeBodyDetail(raw, response.status);
 }
 
 function timeoutError(): ApiError {
@@ -119,7 +146,7 @@ async function request<T>(config: ApiConfig, path: string, options: RequestOptio
       headers: {
         Accept: 'application/json',
         ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        ...authHeaders(config),
+        ...buildAuthHeaders(config),
       },
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       signal: controller.signal,
@@ -148,9 +175,13 @@ export function pickErrorMessage(error: unknown, fallback = '操作失败，请�
   return fallback;
 }
 
-/** Turns a relative `/api/media/{id}` path into an absolute, token-aware URL. */
+/**
+ * Turns a relative `/api/media/{id}` path into an absolute, token-aware URL.
+ * Device-local URIs (`file://`, `content://`, `data:`) are returned untouched.
+ */
 export function mediaUrl(config: ApiConfig, path: string | null | undefined): string | null {
   if (!path) return null;
+  if (LOCAL_URI_RE.test(path)) return path;
   const absolute = /^https?:\/\//i.test(path);
   const url = joinApiPath(config.baseUrl, path);
   const token = config.token.trim();
@@ -159,9 +190,16 @@ export function mediaUrl(config: ApiConfig, path: string | null | undefined): st
   return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 
+export interface SyncMediaUploadMeta {
+  clipId: string;
+  mimeType?: string;
+  originalUrl?: string;
+  sortOrder?: number;
+}
+
 export const api = {
-  health(config: ApiConfig): Promise<HealthResponse> {
-    return request<HealthResponse>(config, '/health', { timeoutMs: 8000 });
+  health(config: ApiConfig, timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS): Promise<HealthResponse> {
+    return request<HealthResponse>(config, '/health', { timeoutMs });
   },
 
   createClip(config: ApiConfig, input: ClipCreateInput): Promise<ClipCreateResponse> {
@@ -212,5 +250,85 @@ export const api = {
 
   listTags(config: ApiConfig): Promise<TagListResponse> {
     return request<TagListResponse>(config, '/api/tags');
+  },
+
+  syncPush(
+    config: ApiConfig,
+    payload: SyncPushRequest,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<SyncPushResponse> {
+    return request<SyncPushResponse>(config, '/api/sync/push', {
+      method: 'POST',
+      body: payload,
+      timeoutMs,
+    });
+  },
+
+  syncPull(
+    config: ApiConfig,
+    sinceVersion: number,
+    limit = SYNC_PULL_LIMIT,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<SyncPullResponse> {
+    const since = Number.isFinite(sinceVersion) && sinceVersion > 0 ? Math.trunc(sinceVersion) : 0;
+    const qs = buildQuery({ since_version: since, limit });
+    return request<SyncPullResponse>(config, `/api/sync/pull${qs}`, { timeoutMs });
+  },
+
+  /** Raw binary upload for one media row (`PUT /api/sync/media/{id}`). */
+  async syncUploadMedia(
+    config: ApiConfig,
+    mediaId: string,
+    fileUri: string,
+    meta: SyncMediaUploadMeta,
+  ): Promise<SyncMediaUploadResponse> {
+    const baseUrl = normalizeBaseUrl(config.baseUrl);
+    if (!baseUrl) throw new ApiError('请先在设置里填写后端地址', 0);
+
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'X-Clip-Id': meta.clipId,
+      ...buildAuthHeaders(config),
+    };
+    if (meta.mimeType) headers['Content-Type'] = meta.mimeType;
+    if (meta.originalUrl) headers['X-Original-Url'] = meta.originalUrl;
+    if (typeof meta.sortOrder === 'number' && Number.isFinite(meta.sortOrder)) {
+      headers['X-Sort-Order'] = String(Math.trunc(meta.sortOrder));
+    }
+
+    const fileSystem = loadFileSystem();
+    let result: Awaited<ReturnType<FileSystemModule['uploadAsync']>>;
+    try {
+      result = await fileSystem.uploadAsync(
+        joinApiPath(baseUrl, `/api/sync/media/${encodeURIComponent(mediaId)}`),
+        fileUri,
+        {
+          httpMethod: 'PUT',
+          uploadType: fileSystem.FileSystemUploadType.BINARY_CONTENT,
+          headers,
+        },
+      );
+    } catch (error) {
+      throw networkError(error);
+    }
+
+    if (result.status < 200 || result.status >= 300) {
+      const detail = describeBodyDetail(result.body, result.status);
+      throw new ApiError(detail, result.status, detail);
+    }
+
+    try {
+      const payload = JSON.parse(result.body) as SyncMediaUploadResponse;
+      if (!payload || typeof payload.id !== 'string' || !payload.id) {
+        throw new Error('unexpected upload payload');
+      }
+      return payload;
+    } catch {
+      throw new ApiError(
+        `图片上传成功但返回体异常（HTTP ${result.status}）`,
+        result.status,
+        result.body.slice(0, 200),
+      );
+    }
   },
 };
