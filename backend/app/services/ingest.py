@@ -406,4 +406,48 @@ async def _enrich(
     return updates
 
 
-__all__ = ["markdown_to_text", "process_clip"]
+async def enrich_existing_clip(clip_id: str, db: Database, settings: Settings) -> None:
+    """Backfill AI enrichment for a clip the mobile client pushed un-enriched.
+
+    Only clips that already hold usable content are touched: a clip that is
+    still ``pending``/``processing`` is left to the normal ingestion pipeline.
+    Tag merges and the summary write both bump ``sync_version`` so the client
+    picks the result up on its next pull. This coroutine never raises, because
+    it runs inside a FastAPI ``BackgroundTasks`` worker.
+    """
+    try:
+        clip = db.get_clip(clip_id)
+        if clip is None:
+            return
+        if str(clip["review_state"]) == ReviewState.DELETED.value:
+            return
+        if str(clip["status"]) not in (
+            ClipStatus.READY.value,
+            ClipStatus.PARTIAL.value,
+        ):
+            return
+
+        fields: dict[str, Any] = {
+            "title": str(clip["title"] or ""),
+            "content_markdown": str(clip["content_markdown"] or ""),
+            "content_text": str(clip["content_text"] or ""),
+        }
+        if not fields["content_text"].strip() and fields["content_markdown"].strip():
+            fields["content_text"] = markdown_to_text(fields["content_markdown"])
+
+        updates = await _enrich(
+            db=db, clip_id=clip_id, settings=settings, fields=fields
+        )
+        if not updates:
+            return
+        latest = db.get_clip(clip_id)
+        if latest is None:
+            return
+        if str(latest["review_state"]) == ReviewState.DELETED.value:
+            return
+        db.update_clip(clip_id, **updates)
+    except Exception as exc:  # noqa: BLE001 - background task must never crash
+        logger.warning("enrich_existing_clip failed for %s: %s", clip_id, exc)
+
+
+__all__ = ["enrich_existing_clip", "markdown_to_text", "process_clip"]

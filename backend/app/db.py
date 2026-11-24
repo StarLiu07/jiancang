@@ -22,7 +22,8 @@ import json
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,35 @@ from app.models import (
     Platform,
     ReviewState,
 )
+
+# Columns a sync payload may write through ``upsert_clip_from_sync`` (the id,
+# created_at and updated_at are handled separately).
+_SYNC_EXTRA_COLUMNS: frozenset[str] = frozenset({"id", "created_at", "updated_at"})
+
+# Defaults used when a sync payload creates a brand new clip row.
+_CLIP_INSERT_DEFAULTS: dict[str, Any] = {
+    "raw_input": "",
+    "url": "",
+    "normalized_url": None,
+    "platform": Platform.WEB.value,
+    "status": ClipStatus.PENDING.value,
+    "ai_status": AIStatus.PENDING.value,
+    "error_message": None,
+    "title": "",
+    "author": "",
+    "published_at": None,
+    "content_markdown": "",
+    "content_text": "",
+    "cover_media_id": None,
+    "summary": "",
+    "key_points_json": "[]",
+    "user_note": "",
+    "review_state": ReviewState.ACTIVE.value,
+    "review_count": 0,
+    "review_interval_days": 0,
+    "next_review_at": None,
+    "last_reviewed_at": None,
+}
 
 # Columns that callers are allowed to patch through ``update_clip``.
 CLIP_COLUMNS: frozenset[str] = frozenset(
@@ -89,12 +119,20 @@ CREATE TABLE IF NOT EXISTS clips (
     next_review_at TEXT,
     last_reviewed_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    sync_version INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_clips_normalized_url ON clips(normalized_url);
 CREATE INDEX IF NOT EXISTS idx_clips_review ON clips(review_state, status, next_review_at);
 CREATE INDEX IF NOT EXISTS idx_clips_created ON clips(created_at);
+
+-- Monotonic sync cursor. ``seq`` is bumped by every clip mutation so mobile
+-- clients can pull "everything newer than the last version they saw".
+CREATE TABLE IF NOT EXISTS sync_meta (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS media (
     id TEXT PRIMARY KEY,
@@ -355,6 +393,33 @@ class Database:
             self._conn.execute("PRAGMA synchronous = NORMAL")
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+            self._migrate()
+
+    def _migrate(self) -> None:
+        """Idempotently upgrade databases created before incremental sync."""
+        with self._lock:
+            columns = {
+                str(row["name"])
+                for row in self._conn.execute("PRAGMA table_info(clips)").fetchall()
+            }
+            if "sync_version" not in columns:
+                # Historic rows silently get sync_version = 1 so a phone that
+                # has never synced can pull the whole library from version 0.
+                self._conn.execute(
+                    "ALTER TABLE clips ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1"
+                )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_clips_sync_version "
+                "ON clips(sync_version)"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS sync_meta "
+                "(key TEXT PRIMARY KEY, value INTEGER NOT NULL)"
+            )
+            self._conn.execute(
+                "INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('seq', 1)"
+            )
+            self._conn.commit()
 
     # -- plumbing ---------------------------------------------------------
     def close(self) -> None:
@@ -390,15 +455,43 @@ class Database:
             self._conn.execute(sql, tuple(params))
             self._conn.commit()
 
-    def _write_many(self, statements: Sequence[tuple[str, Sequence[Any]]]) -> None:
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """Run several statements atomically on the shared connection."""
         with self._lock:
             try:
-                for sql, params in statements:
-                    self._conn.execute(sql, tuple(params))
+                yield self._conn
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
+
+    # -- sync cursor ------------------------------------------------------
+    def _next_seq_locked(self) -> int:
+        """Bump ``sync_meta.seq`` and return the new value (inside a txn)."""
+        self._conn.execute("UPDATE sync_meta SET value = value + 1 WHERE key = 'seq'")
+        row = self._conn.execute(
+            "SELECT value FROM sync_meta WHERE key = 'seq'"
+        ).fetchone()
+        if row is None:  # pragma: no cover - only if sync_meta was tampered with
+            self._conn.execute(
+                "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('seq', 1)"
+            )
+            return 1
+        return int(row[0])
+
+    def _touch_sync_locked(self, clip_id: str) -> int:
+        """Stamp ``clips.sync_version`` with a freshly bumped seq (inside a txn)."""
+        seq = self._next_seq_locked()
+        self._conn.execute(
+            "UPDATE clips SET sync_version = ? WHERE id = ?", (seq, clip_id)
+        )
+        return seq
+
+    def current_sync_version(self) -> int:
+        """Latest global sync cursor (monotonically increasing)."""
+        value = self._scalar("SELECT value FROM sync_meta WHERE key = 'seq'")
+        return int(value or 1)
 
     # -- clips ------------------------------------------------------------
     def create_clip(
@@ -452,12 +545,14 @@ class Database:
             "created_at": stamp,
             "updated_at": stamp,
         }
-        columns = ", ".join(row)
-        placeholders = ", ".join("?" for _ in row)
-        self._write(
-            f"INSERT INTO clips ({columns}) VALUES ({placeholders})",
-            list(row.values()),
-        )
+        with self._transaction() as conn:
+            row["sync_version"] = self._next_seq_locked()
+            columns = ", ".join(row)
+            placeholders = ", ".join("?" for _ in row)
+            conn.execute(
+                f"INSERT INTO clips ({columns}) VALUES ({placeholders})",
+                list(row.values()),
+            )
         if tags:
             self.add_clip_tags(new_id, tags)
         self.sync_fts(new_id)
@@ -507,10 +602,139 @@ class Database:
             + ", ".join(f"{column} = ?" for column in fields)
             + ", updated_at = ? WHERE id = ?"
         )
-        self._write(sql, params)
+        with self._transaction() as conn:
+            conn.execute(sql, params)
+            self._touch_sync_locked(clip_id)
         if sync_fts:
             self.sync_fts(clip_id)
         return self.get_clip(clip_id)
+
+    # -- incremental sync -------------------------------------------------
+    def list_clips_since_version(
+        self, since_version: int = 0, limit: int = 100
+    ) -> tuple[list[sqlite3.Row], bool]:
+        """Clips changed after ``since_version``, ordered for stable paging.
+
+        Soft-deleted rows (``review_state = 'deleted'``) are included on purpose:
+        they are the tombstones the client needs to delete locally.
+        """
+        since = max(0, int(since_version or 0))
+        size = max(1, min(int(limit or 100), 500))
+        rows = self._fetchall(
+            "SELECT * FROM clips WHERE sync_version > ? "
+            "ORDER BY sync_version ASC, id ASC LIMIT ?",
+            (since, size + 1),
+        )
+        has_more = len(rows) > size
+        return rows[:size], has_more
+
+    def upsert_clip_from_sync(
+        self,
+        fields: Mapping[str, Any],
+        *,
+        tags: Iterable[str] | None = None,
+        media: Sequence[Mapping[str, Any]] | None = None,
+        now: datetime | None = None,
+    ) -> sqlite3.Row:
+        """Insert or update a clip coming from the mobile client.
+
+        ``fields`` holds already merged clip columns (the caller owns LWW and AI
+        protection). Tags are replaced when ``tags`` is given; media rows are
+        upserted (never deleted) when ``media`` is given.
+        """
+        clip_id = str(fields.get("id") or "").strip()
+        if not clip_id:
+            raise ValueError("upsert_clip_from_sync requires a non-empty id")
+        unknown = set(fields) - CLIP_COLUMNS - _SYNC_EXTRA_COLUMNS
+        if unknown:
+            raise ValueError(f"unknown clip columns: {sorted(unknown)}")
+
+        stamp = to_iso(now)
+        columns = {
+            column: _coerce_column(column, value)
+            for column, value in fields.items()
+            if column in CLIP_COLUMNS
+        }
+        created_at = str(fields.get("created_at") or "") or stamp
+        updated_at = str(fields.get("updated_at") or "") or stamp
+
+        with self._transaction() as conn:
+            exists = (
+                conn.execute("SELECT 1 FROM clips WHERE id = ?", (clip_id,)).fetchone()
+                is not None
+            )
+            seq = self._next_seq_locked()
+            if exists:
+                values = {**columns, "sync_version": seq, "updated_at": updated_at}
+                assignments = ", ".join(f"{column} = ?" for column in values)
+                conn.execute(
+                    f"UPDATE clips SET {assignments} WHERE id = ?",
+                    (*values.values(), clip_id),
+                )
+            else:
+                row = {
+                    **_CLIP_INSERT_DEFAULTS,
+                    **columns,
+                    "id": clip_id,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "sync_version": seq,
+                }
+                conn.execute(
+                    "INSERT INTO clips ("
+                    + ", ".join(row)
+                    + ") VALUES ("
+                    + ", ".join("?" for _ in row)
+                    + ")",
+                    list(row.values()),
+                )
+            if tags is not None:
+                conn.execute("DELETE FROM clip_tags WHERE clip_id = ?", (clip_id,))
+                self._add_tag_rows_locked(clip_id, normalize_tags(tags))
+            if media is not None:
+                self._upsert_media_locked(clip_id, media, stamp)
+
+        self.sync_fts(clip_id)
+        row = self.get_clip(clip_id)
+        assert row is not None  # noqa: S101 - just inserted/updated
+        return row
+
+    def add_review_log_if_missing(
+        self, clip_id: str, action: str, reviewed_at: str | None = None
+    ) -> bool:
+        """Insert a review log once; returns ``False`` for duplicates/unknown clips."""
+        stamp = reviewed_at or to_iso()
+        with self._transaction() as conn:
+            if conn.execute("SELECT 1 FROM clips WHERE id = ?", (clip_id,)).fetchone() is None:
+                return False
+            duplicate = conn.execute(
+                "SELECT 1 FROM review_logs "
+                "WHERE clip_id = ? AND action = ? AND reviewed_at = ?",
+                (clip_id, str(action), stamp),
+            ).fetchone()
+            if duplicate is not None:
+                return False
+            conn.execute(
+                "INSERT INTO review_logs (clip_id, action, reviewed_at) VALUES (?, ?, ?)",
+                (clip_id, str(action), stamp),
+            )
+            # let other devices pull the new log with the clip record
+            self._touch_sync_locked(clip_id)
+        return True
+
+    def list_review_logs_for_clips(
+        self, clip_ids: Sequence[str]
+    ) -> list[sqlite3.Row]:
+        ids = [str(clip_id) for clip_id in clip_ids if clip_id]
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        return self._fetchall(
+            "SELECT id, clip_id, action, reviewed_at FROM review_logs "
+            f"WHERE clip_id IN ({placeholders}) "
+            "ORDER BY reviewed_at ASC, id ASC",
+            ids,
+        )
 
     def hard_delete_clip(self, clip_id: str) -> None:
         with self._lock:
@@ -722,23 +946,50 @@ class Database:
         now: datetime | None = None,
     ) -> str:
         new_id = media_id or uuid.uuid4().hex
-        self._write(
-            "INSERT OR REPLACE INTO media "
-            "(id, clip_id, original_url, local_path, mime_type, size_bytes, sha256, "
-            "sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                new_id,
-                clip_id,
-                original_url or "",
-                str(local_path),
-                mime_type or "",
-                int(size_bytes or 0),
-                sha256 or "",
-                int(sort_order or 0),
-                to_iso(now),
-            ),
-        )
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO media "
+                "(id, clip_id, original_url, local_path, mime_type, size_bytes, sha256, "
+                "sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    new_id,
+                    clip_id,
+                    original_url or "",
+                    str(local_path),
+                    mime_type or "",
+                    int(size_bytes or 0),
+                    sha256 or "",
+                    int(sort_order or 0),
+                    to_iso(now),
+                ),
+            )
+            self._touch_sync_locked(clip_id)
         return new_id
+
+    def _upsert_media_locked(
+        self,
+        clip_id: str,
+        items: Sequence[Mapping[str, Any]],
+        stamp: str,
+    ) -> None:
+        for index, item in enumerate(items):
+            media_id = str(item.get("id") or uuid.uuid4().hex)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO media "
+                "(id, clip_id, original_url, local_path, mime_type, size_bytes, sha256, "
+                "sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    media_id,
+                    clip_id,
+                    str(item.get("original_url") or ""),
+                    str(item.get("local_path") or ""),
+                    str(item.get("mime_type") or ""),
+                    int(item.get("size_bytes") or 0),
+                    str(item.get("sha256") or ""),
+                    int(item.get("sort_order", index) or 0),
+                    str(item.get("created_at") or stamp),
+                ),
+            )
 
     def get_media(self, media_id: str) -> sqlite3.Row | None:
         return self._fetchone("SELECT * FROM media WHERE id = ?", (media_id,))
@@ -751,36 +1002,23 @@ class Database:
 
     def replace_media(self, clip_id: str, items: Sequence[dict[str, Any]]) -> list[str]:
         """Replace all media rows for ``clip_id`` (used after re-extraction)."""
-        statements: list[tuple[str, Sequence[Any]]] = [
-            ("DELETE FROM media WHERE clip_id = ?", (clip_id,))
-        ]
         ids: list[str] = []
-        for index, item in enumerate(items):
+        normalized: list[dict[str, Any]] = []
+        for item in items:
             media_id = str(item.get("id") or uuid.uuid4().hex)
             ids.append(media_id)
-            statements.append(
-                (
-                    "INSERT OR REPLACE INTO media "
-                    "(id, clip_id, original_url, local_path, mime_type, size_bytes, "
-                    "sha256, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        media_id,
-                        clip_id,
-                        str(item.get("original_url") or ""),
-                        str(item.get("local_path") or ""),
-                        str(item.get("mime_type") or ""),
-                        int(item.get("size_bytes") or 0),
-                        str(item.get("sha256") or ""),
-                        int(item.get("sort_order", index) or index),
-                        to_iso(),
-                    ),
-                )
-            )
-        self._write_many(statements)
+            normalized.append({**item, "id": media_id})
+        stamp = to_iso()
+        with self._transaction() as conn:
+            conn.execute("DELETE FROM media WHERE clip_id = ?", (clip_id,))
+            self._upsert_media_locked(clip_id, normalized, stamp)
+            self._touch_sync_locked(clip_id)
         return ids
 
     def delete_media_rows(self, clip_id: str) -> None:
-        self._write("DELETE FROM media WHERE clip_id = ?", (clip_id,))
+        with self._transaction() as conn:
+            conn.execute("DELETE FROM media WHERE clip_id = ?", (clip_id,))
+            self._touch_sync_locked(clip_id)
 
     def count_media_references(
         self, local_path: str, *, exclude_clip_id: str | None = None
@@ -802,49 +1040,40 @@ class Database:
         )
 
     # -- tags -------------------------------------------------------------
+    def _add_tag_rows_locked(self, clip_id: str, names: Sequence[str]) -> None:
+        """Attach tag names to a clip (inside a txn); the bump is the caller's job."""
+        for name in names:
+            row = self._conn.execute(
+                "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (name,)
+            ).fetchone()
+            if row is None:
+                cursor = self._conn.execute("INSERT INTO tags (name) VALUES (?)", (name,))
+                tag_id = int(cursor.lastrowid or 0)
+            else:
+                tag_id = int(row["id"])
+            self._conn.execute(
+                "INSERT OR IGNORE INTO clip_tags (clip_id, tag_id) VALUES (?, ?)",
+                (clip_id, tag_id),
+            )
+
     def add_clip_tags(self, clip_id: str, tags: Iterable[str]) -> list[str]:
         names = normalize_tags(tags)
         if not names:
             return self.get_clip_tags(clip_id)
-        statements: list[tuple[str, Sequence[Any]]] = []
-        tag_ids: list[int] = []
-        with self._lock:
-            try:
-                for name in names:
-                    row = self._conn.execute(
-                        "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (name,)
-                    ).fetchone()
-                    if row is None:
-                        cursor = self._conn.execute(
-                            "INSERT INTO tags (name) VALUES (?)", (name,)
-                        )
-                        tag_id = int(cursor.lastrowid or 0)
-                    else:
-                        tag_id = int(row["id"])
-                    tag_ids.append(tag_id)
-                for tag_id in tag_ids:
-                    statements.append(
-                        (
-                            "INSERT OR IGNORE INTO clip_tags (clip_id, tag_id) VALUES (?, ?)",
-                            (clip_id, tag_id),
-                        )
-                    )
-                for sql, params in statements:
-                    self._conn.execute(sql, tuple(params))
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
-                raise
+        with self._transaction():
+            self._add_tag_rows_locked(clip_id, names)
+            self._touch_sync_locked(clip_id)
         self.sync_fts(clip_id)
         return self.get_clip_tags(clip_id)
 
     def set_clip_tags(self, clip_id: str, tags: Iterable[str]) -> list[str]:
         names = normalize_tags(tags)
-        self._write("DELETE FROM clip_tags WHERE clip_id = ?", (clip_id,))
-        if names:
-            return self.add_clip_tags(clip_id, names)
+        with self._transaction() as conn:
+            conn.execute("DELETE FROM clip_tags WHERE clip_id = ?", (clip_id,))
+            self._add_tag_rows_locked(clip_id, names)
+            self._touch_sync_locked(clip_id)
         self.sync_fts(clip_id)
-        return []
+        return self.get_clip_tags(clip_id)
 
     def get_clip_tags(self, clip_id: str) -> list[str]:
         rows = self._fetchall(

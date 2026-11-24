@@ -13,7 +13,7 @@ from app.auth import auth_enabled, install_auth
 from app.config import Settings, get_settings
 from app.db import Database
 from app.models import HealthResponse
-from app.routers import clips, review, tags
+from app.routers import clips, review, sync, tags
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ def create_app(settings: Settings | None = None, *, eager_db: bool = True) -> Fa
     app.include_router(clips.router)
     app.include_router(clips.media_router)
     app.include_router(review.router)
+    app.include_router(sync.router)
     app.include_router(tags.router)
 
     @app.get("/health", response_model=HealthResponse, tags=["meta"])
