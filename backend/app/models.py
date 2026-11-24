@@ -137,3 +137,81 @@ class HealthResponse(BaseModel):
     app: str
     ai_enabled: bool
     auth_enabled: bool
+
+
+class SyncMediaPayload(BaseModel):
+    id: str
+    clip_id: str
+    original_url: str = ""
+    mime_type: str = ""
+    size_bytes: int = 0
+    sha256: str = ""
+    sort_order: int = 0
+    created_at: str = ""
+
+
+class SyncClipPayload(BaseModel):
+    id: str
+    raw_input: str = ""
+    url: str = ""
+    normalized_url: str | None = None
+    platform: Platform = Platform.WEB
+    status: ClipStatus = ClipStatus.PENDING
+    ai_status: AIStatus = AIStatus.PENDING
+    error_message: str | None = None
+    title: str = ""
+    author: str = ""
+    published_at: str | None = None
+    content_markdown: str = ""
+    content_text: str = ""
+    cover_media_id: str | None = None
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    user_note: str = ""
+    review_state: ReviewState = ReviewState.ACTIVE
+    review_count: int = 0
+    review_interval_days: int = 0
+    next_review_at: str | None = None
+    last_reviewed_at: str | None = None
+    created_at: str
+    updated_at: str
+    tags: list[str] = Field(default_factory=list)
+    media: list[SyncMediaPayload] = Field(default_factory=list)
+
+
+class SyncClipRecord(SyncClipPayload):
+    sync_version: int = 0
+
+
+class SyncReviewLogPayload(BaseModel):
+    clip_id: str
+    action: ReviewAction
+    reviewed_at: str
+
+
+class SyncPushRequest(BaseModel):
+    clips: list[SyncClipPayload] = Field(default_factory=list)
+    review_logs: list[SyncReviewLogPayload] = Field(default_factory=list)
+
+
+class SyncPushResponse(BaseModel):
+    accepted_ids: list[str] = Field(default_factory=list)
+    skipped_ids: list[str] = Field(default_factory=list)
+    missing_media_ids: list[str] = Field(default_factory=list)
+    queued_ai_ids: list[str] = Field(default_factory=list)
+    server_version: int = 0
+
+
+class SyncPullResponse(BaseModel):
+    clips: list[SyncClipRecord] = Field(default_factory=list)
+    review_logs: list[SyncReviewLogPayload] = Field(default_factory=list)
+    latest_version: int = 0
+    has_more: bool = False
+
+
+class SyncMediaUploadResponse(BaseModel):
+    id: str
+    clip_id: str
+    size_bytes: int
+    sha256: str
+    mime_type: str

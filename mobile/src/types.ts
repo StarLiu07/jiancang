@@ -132,3 +132,87 @@ export interface ApiConfig {
   baseUrl: string;
   token: string;
 }
+
+export interface LocalAiConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+export interface SyncMediaPayload {
+  id: string;
+  clip_id: string;
+  original_url: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface SyncClipPayload {
+  id: string;
+  raw_input: string;
+  url: string;
+  normalized_url: string | null;
+  platform: Platform;
+  status: ClipStatus;
+  ai_status: AIStatus;
+  error_message: string | null;
+  title: string;
+  author: string;
+  published_at: string | null;
+  content_markdown: string;
+  content_text: string;
+  cover_media_id: string | null;
+  summary: string;
+  key_points: string[];
+  user_note: string;
+  review_state: ReviewState;
+  review_count: number;
+  review_interval_days: number;
+  next_review_at: string | null;
+  last_reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  tags: string[];
+  media: SyncMediaPayload[];
+}
+
+export interface SyncClipRecord extends SyncClipPayload {
+  sync_version: number;
+}
+
+export interface SyncReviewLogPayload {
+  clip_id: string;
+  action: ReviewActionType;
+  reviewed_at: string;
+}
+
+export interface SyncPushRequest {
+  clips: SyncClipPayload[];
+  review_logs: SyncReviewLogPayload[];
+}
+
+export interface SyncPushResponse {
+  accepted_ids: string[];
+  skipped_ids: string[];
+  missing_media_ids: string[];
+  queued_ai_ids: string[];
+  server_version: number;
+}
+
+export interface SyncPullResponse {
+  clips: SyncClipRecord[];
+  review_logs: SyncReviewLogPayload[];
+  latest_version: number;
+  has_more: boolean;
+}
+
+export interface SyncMediaUploadResponse {
+  id: string;
+  clip_id: string;
+  size_bytes: number;
+  sha256: string;
+  mime_type: string;
+}
