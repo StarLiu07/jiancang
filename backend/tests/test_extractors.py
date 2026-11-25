@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -14,10 +15,14 @@ from app.services.extractors.generic import GenericWebExtractor
 from app.services.extractors.wechat import WeChatExtractor
 from app.services.extractors.x import FX_API_URL, XExtractor, parse_status_url
 from app.services.extractors.xhs import (
+    XHS_HEADERS,
     XiaohongshuExtractor,
+    _note_body_text,
+    _note_images,
     extract_initial_state,
     extract_note_id,
     find_note,
+    unwrap_xhs_redirect,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -98,6 +103,37 @@ async def test_wechat_extract_degrades_on_http_error() -> None:
     assert result.partial is True
     assert result.error_message is not None
     assert result.content_text == "微信分享文案"
+    assert result.referer == "https://mp.weixin.qq.com/"
+
+
+WECHAT_VERIFY_HTML = """
+<html><head><title>微信公众平台</title>
+  <meta property="og:title" content="微信公众平台">
+</head><body>
+  <div class="weui-msg">
+    <h2 class="weui-msg__title">环境异常</h2>
+    <p class="weui-msg__desc">当前环境异常，完成验证后即可继续访问。</p>
+    <a class="weui-btn" href="#">去验证</a>
+  </div>
+</body></html>
+"""
+
+
+async def test_wechat_verification_page_degrades_instead_of_ready() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text=WECHAT_VERIFY_HTML, headers={"content-type": "text/html"}
+        )
+
+    async with make_client(handler) as client:
+        result = await WeChatExtractor().extract(
+            "https://mp.weixin.qq.com/s/abc", raw_input="微信分享文案", client=client
+        )
+
+    assert result.partial is True
+    assert result.error_message == "触发微信访问验证，无法直接抓取正文"
+    assert result.content_text == "微信分享文案"
+    assert "环境异常" not in result.content_markdown
     assert result.referer == "https://mp.weixin.qq.com/"
 
 
@@ -232,6 +268,94 @@ async def test_x_extract_degrades_on_unparsable_url() -> None:
     result = await XExtractor().extract("https://x.com/elonmusk", raw_input="文案")
     assert result.partial is True
     assert result.error_message is not None
+
+
+async def test_x_extract_follows_tco_short_link() -> None:
+    canonical = "https://x.com/elonmusk/status/1726110000000000000"
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.host == "t.co":
+            return httpx.Response(301, headers={"location": canonical})
+        if request.url.host == "api.fxtwitter.com":
+            return httpx.Response(200, json=FX_PAYLOAD)
+        return httpx.Response(404, text="not found")
+
+    # Deliberately no follow_redirects on the client: the extractor must ask for it.
+    async with make_client(handler) as client:
+        result = await XExtractor().extract(
+            "https://t.co/abc123", raw_input="推文分享", client=client
+        )
+
+    assert requested[0] == "https://t.co/abc123"
+    assert requested[1] == canonical
+    assert requested[-1] == FX_API_URL.format(
+        screen_name="elonmusk", status_id="1726110000000000000"
+    )
+    assert result.platform is Platform.X
+    assert result.partial is False
+    assert result.error_message is None
+    assert "第二行内容" in result.content_text
+
+
+ARTICLE_ONLY_PAYLOAD = {
+    "code": 200,
+    "message": "OK",
+    "tweet": {
+        "id": "1726110000000000099",
+        "url": "https://x.com/foo/status/1726110000000000099",
+        "text": "",
+        "author": {"name": "Foo", "screen_name": "foo"},
+        "article": {
+            "title": "长文标题",
+            "content": {
+                "blocks": [{"text": "长文第一段"}, {"text": "长文第二段"}],
+            },
+        },
+    },
+}
+
+
+async def test_x_extract_article_only_keeps_content_text() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=ARTICLE_ONLY_PAYLOAD)
+
+    async with make_client(handler) as client:
+        result = await XExtractor().extract(
+            "https://x.com/foo/status/1726110000000000099", client=client
+        )
+
+    assert result.partial is False
+    assert result.content_text
+    assert "长文第一段" in result.content_text
+    assert "长文第二段" in result.content_text
+    assert "## 长文标题" in result.content_markdown
+
+
+QUOTE_ONLY_PAYLOAD = {
+    "code": 200,
+    "tweet": {
+        "id": "1726110000000000100",
+        "url": "https://x.com/bar/status/1726110000000000100",
+        "text": "",
+        "author": {"name": "Bar", "screen_name": "bar"},
+        "quote": {"text": "被引用的推文正文", "author": {"screen_name": "someone"}},
+    },
+}
+
+
+async def test_x_extract_quote_only_keeps_content_text() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=QUOTE_ONLY_PAYLOAD)
+
+    async with make_client(handler) as client:
+        result = await XExtractor().extract(
+            "https://x.com/bar/status/1726110000000000100", client=client
+        )
+
+    assert result.partial is False
+    assert "被引用的推文正文" in result.content_text
 
 
 # ---------------------------------------------------------------------------- XHS
@@ -462,6 +586,187 @@ async def test_xhs_extract_survives_mcp_failure(tmp_path: Path) -> None:
     assert result.content_text == "原始文案"
 
 
+def test_unwrap_xhs_redirect_returns_note_url() -> None:
+    note_url = f"https://www.xiaohongshu.com/explore/{NOTE_ID}?xsec_token=TOK"
+    login = "https://www.xiaohongshu.com/login?" + urlencode({"redirectPath": note_url})
+    website_login = "https://www.xiaohongshu.com/website-login?" + urlencode(
+        {"redirectPath": note_url}
+    )
+
+    assert unwrap_xhs_redirect(login) == note_url
+    assert unwrap_xhs_redirect(website_login) == note_url
+    assert unwrap_xhs_redirect(note_url) == note_url
+    assert unwrap_xhs_redirect("") == ""
+
+
+def test_note_images_picks_one_url_per_image_and_upgrades_xhscdn() -> None:
+    note = {
+        "imageList": [
+            {
+                "urlDefault": "http://sns-img.xhscdn.com/a.jpg",
+                "infoList": [
+                    {"imageScene": "CRD_WM_JPG", "url": "http://sns-img.xhscdn.com/a_wm.jpg"},
+                    {
+                        "imageScene": "WB_DFT",
+                        "url": "https://sns-img-qc.xhscdn.com/a_dft.jpg",
+                    },
+                ],
+            },
+            {
+                "infoList": [
+                    {"imageScene": "WB_DFT", "url": "https://sns-img.xhscdn.com/b.jpg"}
+                ]
+            },
+            {"urlPre": "http://cdn.example.com/c.jpg"},
+        ]
+    }
+
+    assert _note_images(note) == [
+        "https://sns-img.xhscdn.com/a.jpg",
+        "https://sns-img.xhscdn.com/b.jpg",
+        "http://cdn.example.com/c.jpg",
+    ]
+
+
+def test_note_body_text_keeps_paragraph_breaks() -> None:
+    note = {"desc": "第一段内容。\n\n第二段内容。   \n第三段内容。"}
+    assert _note_body_text(note) == "第一段内容。\n\n第二段内容。\n第三段内容。"
+    assert _note_body_text({"desc": "  单行   笔记  "}) == "单行 笔记"
+
+
+async def test_xhs_request_sends_browser_ordered_headers() -> None:
+    captured: list[str] = []
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.extend(request.headers.keys())
+        seen["accept-encoding"] = request.headers.get("accept-encoding", "")
+        return httpx.Response(200, text=XHS_HTML)
+
+    async with make_client(handler) as client:
+        await XiaohongshuExtractor().extract(
+            f"https://www.xiaohongshu.com/explore/{NOTE_ID}", client=client
+        )
+
+    assert XHS_HEADERS["Accept-Encoding"] == "gzip, deflate"
+    assert seen["accept-encoding"] == "gzip, deflate"
+    # The WAF bounces clients whose Accept-Encoding is missing or injected before the
+    # user-agent, so the browser header order itself is part of the contract.
+    assert (
+        captured.index("user-agent")
+        < captured.index("accept")
+        < captured.index("accept-language")
+        < captured.index("accept-encoding")
+    )
+
+
+XHS_LOGIN_SHELL_HTML = """
+<html><head>
+  <title>小红书 - 你的生活兴趣社区</title>
+  <meta property="og:title" content="小红书 - 你的生活兴趣社区">
+  <meta property="og:image" content="https://fe-static.xhscdn.com/logo.png">
+</head><body><div id="app"></div></body></html>
+"""
+
+
+async def test_xhs_login_shell_is_not_treated_as_og_content() -> None:
+    url = f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=XHS_LOGIN_SHELL_HTML)
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(
+            url, raw_input="小红书分享文案", client=client
+        )
+
+    assert result.partial is True
+    assert result.error_message is not None and "登录" in result.error_message
+    assert result.image_urls == []
+    assert result.url == url
+    assert result.content_text == "小红书分享文案"
+
+
+async def test_xhs_unwraps_login_redirect_before_parsing() -> None:
+    note_url = f"https://www.xiaohongshu.com/explore/{NOTE_ID}?xsec_token=TOK"
+    login_url = "https://www.xiaohongshu.com/login?" + urlencode({"redirectPath": note_url})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Xiaohongshu bounces anonymous clients from the note to the login shell.
+        if request.url.path.startswith("/explore"):
+            return httpx.Response(302, headers={"location": login_url})
+        return httpx.Response(200, text=XHS_HTML, headers={"content-type": "text/html"})
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(note_url, client=client)
+
+    assert result.partial is False
+    assert result.url == note_url
+    assert result.title == "笔记标题"
+
+
+async def test_xhs_repairs_polluted_login_url_of_old_clip() -> None:
+    note_url = f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+    polluted = "https://www.xiaohongshu.com/login?" + urlencode({"redirectPath": note_url})
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(200, text=XHS_HTML, headers={"content-type": "text/html"})
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(
+            polluted, raw_input="旧剪藏", client=client
+        )
+
+    assert requested[0] == note_url
+    assert result.partial is False
+    assert result.url == note_url
+
+
+async def test_xhs_prefers_mcp_over_og_metadata(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path, mediacrawler_mcp_url="https://nuc.local/mcp")
+    og_html = """<html><head>
+      <meta property="og:title" content="OG 笔记标题">
+      <meta property="og:description" content="OG 笔记描述">
+    </head><body>加载中</body></html>"""
+    detail_payload = {
+        "title": "MCP 笔记标题",
+        "desc": "MCP 返回的正文",
+        "imageList": [{"urlDefault": "https://sns-img.xhscdn.com/mcp.jpg"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "1",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(detail_payload, ensure_ascii=False),
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(200, text=og_html, headers={"content-type": "text/html"})
+
+    url = f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor(settings).extract(
+            url, raw_input="文案", client=client
+        )
+
+    assert result.partial is False
+    assert result.error_message is None
+    assert result.title == "MCP 笔记标题"
+    assert "MCP 返回的正文" in result.content_text
+
+
 # ------------------------------------------------------------------------ Generic
 
 GENERIC_HTML = """
@@ -519,6 +824,36 @@ async def test_generic_extract_degrades_on_error() -> None:
     assert result.partial is True
     assert result.error_message is not None
     assert result.content_text == "分享文案"
+
+
+async def test_generic_extract_uses_redirect_final_url_as_base() -> None:
+    final_url = "https://blog.example.com/moved/post"
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.path == "/short/1":
+            return httpx.Response(302, headers={"location": final_url})
+        return httpx.Response(200, text=GENERIC_HTML, headers={"content-type": "text/html"})
+
+    # Deliberately no follow_redirects on the client: the extractor must ask for it.
+    async with make_client(handler) as client:
+        result = await GenericWebExtractor().extract("https://short.example/short/1", client=client)
+
+    assert requested[0] == "https://short.example/short/1"
+    assert result.url == final_url
+    assert result.referer == "https://blog.example.com"
+    assert "https://blog.example.com/img/inline.jpg" in result.image_urls
+    assert "https://short.example/img/inline.jpg" not in result.image_urls
+
+
+async def test_generic_parse_reports_error_message_for_empty_body() -> None:
+    html = "<html><head><title>空壳页面</title></head><body></body></html>"
+
+    result = GenericWebExtractor().parse(html, "https://blog.example.com/empty")
+
+    assert result.partial is True
+    assert result.error_message == "未能提取到正文内容（可能是动态渲染页或需要登录）"
 
 
 # ----------------------------------------------------------------- dispatch API
@@ -592,6 +927,89 @@ async def test_extract_content_auto_detects_platform(test_settings: Settings) ->
     assert wechat.platform is Platform.WECHAT
     assert x_result.platform is Platform.X
     assert web.platform is Platform.WEB
+
+
+async def test_extract_content_reroutes_redirected_short_link_to_wechat(
+    test_settings: Settings,
+) -> None:
+    final_url = "https://mp.weixin.qq.com/s/abc123"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "short.example":
+            return httpx.Response(302, headers={"location": final_url})
+        if request.url.host == "mp.weixin.qq.com":
+            return httpx.Response(
+                200, text=WECHAT_HTML, headers={"content-type": "text/html"}
+            )
+        return httpx.Response(404, text="not found")
+
+    async with make_client(handler) as client:
+        result = await extract_content(
+            "https://short.example/go/1",
+            raw_input="微信短链",
+            settings=test_settings,
+            client=client,
+        )
+
+    assert result.platform is Platform.WECHAT
+    assert result.url == final_url
+    assert result.title == "测试文章标题"
+    assert result.partial is False
+    assert "第一段正文。" in result.content_text
+
+
+async def test_extract_content_reroutes_redirected_short_link_to_xhs(
+    test_settings: Settings,
+) -> None:
+    final_url = f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "short.example":
+            return httpx.Response(302, headers={"location": final_url})
+        if request.url.host == "www.xiaohongshu.com":
+            return httpx.Response(200, text=XHS_HTML, headers={"content-type": "text/html"})
+        return httpx.Response(404, text="not found")
+
+    async with make_client(handler) as client:
+        result = await extract_content(
+            "https://short.example/go/2",
+            raw_input="小红书短链",
+            settings=test_settings,
+            client=client,
+        )
+
+    assert result.platform is Platform.XIAOHONGSHU
+    assert result.url == final_url
+    assert result.title == "笔记标题"
+    assert result.partial is False
+    assert "这是笔记的正文内容。" in result.content_text
+    assert result.referer == "https://www.xiaohongshu.com/"
+
+
+async def test_extract_content_reroutes_redirected_short_link_to_x(
+    test_settings: Settings,
+) -> None:
+    final_url = "https://x.com/elonmusk/status/1726110000000000000"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "short.example":
+            return httpx.Response(302, headers={"location": final_url})
+        if request.url.host == "api.fxtwitter.com":
+            return httpx.Response(200, json=FX_PAYLOAD)
+        return httpx.Response(200, text="<html><body>x.com shell</body></html>")
+
+    async with make_client(handler) as client:
+        result = await extract_content(
+            "https://short.example/go/3",
+            raw_input="推文短链",
+            settings=test_settings,
+            client=client,
+        )
+
+    assert result.platform is Platform.X
+    assert result.partial is False
+    assert result.title == "第一行推文"
+    assert "第二行内容" in result.content_text
 
 
 async def test_extract_content_never_raises_on_unexpected_failure() -> None:

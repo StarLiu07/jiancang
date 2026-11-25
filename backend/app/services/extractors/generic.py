@@ -237,9 +237,10 @@ class GenericWebExtractor:
     ) -> ExtractedContent:
         try:
             async with use_client(client) as http:
-                response = await http.get(url, headers=BROWSER_HEADERS)
+                response = await http.get(url, headers=BROWSER_HEADERS, follow_redirects=True)
                 response.raise_for_status()
                 html = response.text
+                final_url = str(response.url) or url
         except Exception as exc:  # noqa: BLE001 - degrade instead of crashing
             logger.warning("Generic fetch failed for %s: %s", url, exc)
             return ExtractedContent(
@@ -251,7 +252,8 @@ class GenericWebExtractor:
                 partial=True,
                 error_message=f"{type(exc).__name__}: {exc}",
             )
-        return self.parse(html, url, raw_input)
+        # Parse against the post-redirect URL so ``url`` and relative images stay canonical.
+        return self.parse(html, final_url, raw_input)
 
     def parse(self, html: str, url: str, raw_input: str = "") -> ExtractedContent:
         soup = BeautifulSoup(html, "html.parser")
@@ -294,5 +296,10 @@ class GenericWebExtractor:
             content_text=content_text,
             image_urls=image_urls,
             partial=not bool(content_text),
+            error_message=(
+                None
+                if content_text
+                else "未能提取到正文内容（可能是动态渲染页或需要登录）"
+            ),
             referer=page_origin(url),
         )

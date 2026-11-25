@@ -29,11 +29,29 @@ logger = logging.getLogger(__name__)
 
 WECHAT_REFERER = "https://mp.weixin.qq.com/"
 
+# Served by the anti-bot interstitial instead of the article body.
+_VERIFICATION_MARKERS = ("环境异常", "完成验证后即可继续访问", "去验证")
+_VERIFICATION_MESSAGE = "触发微信访问验证，无法直接抓取正文"
+_NO_BODY_MESSAGE = "找不到正文内容（#js_content）"
+
 
 def _clean_text(value: str | None) -> str:
     if not value:
         return ""
     return " ".join(value.split()).strip()
+
+
+def _visible_text(soup: BeautifulSoup) -> str:
+    """Page text without script/style noise, used for anti-bot page detection."""
+    clone = BeautifulSoup(str(soup), "html.parser")
+    for tag in clone.find_all(("script", "style", "noscript")):
+        tag.decompose()
+    return clone.get_text(" ", strip=True)
+
+
+def _is_verification_page(soup: BeautifulSoup) -> bool:
+    text = _visible_text(soup)
+    return any(marker in text for marker in _VERIFICATION_MARKERS)
 
 
 class WeChatExtractor:
@@ -90,13 +108,42 @@ class WeChatExtractor:
             or None
         )
 
-        content_node = (
-            soup.select_one("#js_content")
-            or soup.select_one(".rich_media_content")
-            or soup.find("article")
-            or soup.body
-            or soup
-        )
+        # Only a real article body (``#js_content``/``.rich_media_content``, or an
+        # ``<article>`` fallback) may be treated as content; the page body can be the
+        # anti-bot interstitial.
+        body_node = soup.select_one("#js_content") or soup.select_one(".rich_media_content")
+        if body_node is None and _is_verification_page(soup):
+            raw = (raw_input or "").strip()
+            return ExtractedContent(
+                platform=self.platform,
+                url=url,
+                title=first_line(title, limit=200) or title,
+                author=author,
+                published_at=published_at,
+                content_markdown=raw or title,
+                content_text=raw or title,
+                partial=True,
+                error_message=_VERIFICATION_MESSAGE,
+                referer=WECHAT_REFERER,
+            )
+        content_node = body_node or soup.find("article")
+        if content_node is None:
+            description = _clean_text(meta_content(soup, "og:description"))
+            raw = (raw_input or "").strip()
+            return ExtractedContent(
+                platform=self.platform,
+                url=url,
+                title=first_line(title, limit=200) or title,
+                author=author,
+                published_at=published_at,
+                content_markdown=compose_markdown(
+                    title=title, meta_line=author, body=description
+                ),
+                content_text=description or raw or title,
+                partial=True,
+                error_message=_NO_BODY_MESSAGE,
+                referer=WECHAT_REFERER,
+            )
         drop_noise(content_node)
 
         # WeChat lazy-loads every body image through `data-src`; rewrite before Markdown conversion.
@@ -142,6 +189,6 @@ class WeChatExtractor:
             content_text=content_text,
             image_urls=image_urls,
             partial=not bool(body_markdown),
-            error_message=None if body_markdown else "找不到正文内容（#js_content）",
+            error_message=None if body_markdown else _NO_BODY_MESSAGE,
             referer=WECHAT_REFERER,
         )

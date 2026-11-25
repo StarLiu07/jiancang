@@ -17,8 +17,27 @@ _TRAILING_JUNK = "，。！？；：、…·,.!?;:'\"“”‘’<>》」』】}
 _BRACKETS = {")": "(", "]": "[", "}": "{"}
 
 _WECHAT_HOSTS = {"mp.weixin.qq.com", "weixin.qq.com"}
-_X_HOSTS = {"x.com", "twitter.com", "mobile.twitter.com", "fxtwitter.com", "vxtwitter.com"}
-_XHS_HOSTS = {"xiaohongshu.com", "xhslink.com"}
+_X_HOSTS = {
+    "x.com",
+    "twitter.com",
+    "mobile.twitter.com",
+    "fxtwitter.com",
+    "vxtwitter.com",
+    "fixupx.com",
+    "fixvx.com",
+    "t.co",
+}
+# Hosts whose ``/<screen_name>/status/<id>`` path is valid on ``x.com`` after rewriting.
+# ``t.co/xxxx`` is a redirect stub only: rewriting it to ``x.com`` would 404.
+_X_REWRITE_HOSTS = {
+    "twitter.com",
+    "mobile.twitter.com",
+    "fxtwitter.com",
+    "vxtwitter.com",
+    "fixupx.com",
+    "fixvx.com",
+}
+_XHS_HOSTS = {"xiaohongshu.com", "xhslink.com", "xhslink.cn", "xhs.cn"}
 
 # Query parameters dropped during normalization. `utm_*` is handled by prefix.
 _TRACKING_PARAMS = {
@@ -154,7 +173,7 @@ def normalize_url(url: str, platform: Platform | None = None) -> str:
         netloc = f"{host}:{parts.port}"
 
     resolved = platform or detect_platform(url)
-    if resolved is Platform.X and _host_matches(host, _X_HOSTS):
+    if resolved is Platform.X and _host_matches(host, _X_REWRITE_HOSTS):
         netloc = "x.com"
 
     kept: list[tuple[str, str]] = []
