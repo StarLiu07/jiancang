@@ -1,5 +1,8 @@
 import type {
   ApiConfig,
+  ClipChatHistoryResponse,
+  ClipChatRequest,
+  ClipChatResponse,
   ClipCreateInput,
   ClipCreateResponse,
   ClipDetail,
@@ -11,6 +14,8 @@ import type {
   ReviewActionInput,
   ReviewActionResponse,
   ReviewTodayResponse,
+  StatelessChatRequest,
+  StatelessChatResponse,
   SyncMediaUploadResponse,
   SyncPullResponse,
   SyncPushRequest,
@@ -21,6 +26,8 @@ import { joinApiPath, normalizeBaseUrl } from '../utils/url';
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 8000;
+/** AI chat turns run an LLM round-trip, so they get a wider budget. */
+const DEFAULT_CHAT_TIMEOUT_MS = 60_000;
 const SYNC_PULL_LIMIT = 100;
 /** Device-local URIs that must never be routed through the backend. */
 const LOCAL_URI_RE = /^(?:file|content|data):/i;
@@ -235,6 +242,47 @@ export const api = {
 
   retryClip(config: ApiConfig, id: string): Promise<ClipDetail> {
     return request<ClipDetail>(config, `/api/clips/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+  },
+
+  /** Persisted chat history for one clip (`GET /api/clips/{id}/chat`). */
+  listClipChat(config: ApiConfig, clipId: string): Promise<ClipChatHistoryResponse> {
+    return request<ClipChatHistoryResponse>(config, `/api/clips/${encodeURIComponent(clipId)}/chat`);
+  },
+
+  /** Server-side chat turn: persists both messages (`POST /api/clips/{id}/chat`). */
+  sendClipChat(
+    config: ApiConfig,
+    clipId: string,
+    input: ClipChatRequest,
+    signal?: AbortSignal,
+  ): Promise<ClipChatResponse> {
+    return request<ClipChatResponse>(config, `/api/clips/${encodeURIComponent(clipId)}/chat`, {
+      method: 'POST',
+      body: input,
+      timeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
+      signal,
+    });
+  },
+
+  /** Drops every persisted message for one clip (`DELETE /api/clips/{id}/chat`). */
+  clearClipChat(config: ApiConfig, clipId: string): Promise<DeleteResponse> {
+    return request<DeleteResponse>(config, `/api/clips/${encodeURIComponent(clipId)}/chat`, {
+      method: 'DELETE',
+    });
+  },
+
+  /** Stateless chat over an article snapshot the client already holds (`POST /api/ai/chat`). */
+  statelessChat(
+    config: ApiConfig,
+    input: StatelessChatRequest,
+    signal?: AbortSignal,
+  ): Promise<StatelessChatResponse> {
+    return request<StatelessChatResponse>(config, '/api/ai/chat', {
+      method: 'POST',
+      body: input,
+      timeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
+      signal,
+    });
   },
 
   reviewToday(config: ApiConfig, limit = 5): Promise<ReviewTodayResponse> {

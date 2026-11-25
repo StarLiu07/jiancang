@@ -216,3 +216,58 @@ export interface SyncMediaUploadResponse {
   sha256: string;
   mime_type: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Article AI chat (mirrors the backend Chat* / *Chat* schemas)                */
+/* -------------------------------------------------------------------------- */
+
+export type ChatRole = 'user' | 'assistant';
+
+export interface ChatMessageItem {
+  id: string;
+  clip_id: string;
+  role: ChatRole;
+  content: string;
+  created_at: string;
+}
+
+export interface ChatTurnInput {
+  role: ChatRole;
+  content: string;
+}
+
+export interface ClipChatRequest {
+  message: string;
+}
+
+export interface ClipChatResponse {
+  user_message: ChatMessageItem;
+  assistant_message: ChatMessageItem;
+  model: string;
+}
+
+export interface ClipChatHistoryResponse {
+  clip_id: string;
+  messages: ChatMessageItem[];
+}
+
+export interface ArticleChatContext {
+  title: string;
+  author: string;
+  platform: Platform;
+  url: string;
+  summary: string;
+  key_points: string[];
+  content_text: string;
+  user_note: string;
+}
+
+export interface StatelessChatRequest {
+  article: ArticleChatContext;
+  messages: ChatTurnInput[];
+}
+
+export interface StatelessChatResponse {
+  reply: string;
+  model: string;
+}

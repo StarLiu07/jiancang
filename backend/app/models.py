@@ -215,3 +215,67 @@ class SyncMediaUploadResponse(BaseModel):
     size_bytes: int
     sha256: str
     mime_type: str
+
+
+# ---------------------------------------------------------------------------
+# Article AI chat (shared client/server contract)
+# ---------------------------------------------------------------------------
+
+
+class ChatRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class ChatMessageItem(BaseModel):
+    id: str
+    clip_id: str
+    role: ChatRole
+    content: str
+    created_at: str
+
+
+class ChatTurnInput(BaseModel):
+    role: ChatRole
+    content: str = Field(..., min_length=1, max_length=12000)
+
+
+class ClipChatRequest(BaseModel):
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=4000,
+        description="User question about the clip",
+    )
+
+
+class ClipChatResponse(BaseModel):
+    user_message: ChatMessageItem
+    assistant_message: ChatMessageItem
+    model: str = ""
+
+
+class ClipChatHistoryResponse(BaseModel):
+    clip_id: str
+    messages: list[ChatMessageItem] = Field(default_factory=list)
+
+
+class ArticleChatContext(BaseModel):
+    title: str = ""
+    author: str = ""
+    platform: Platform = Platform.WEB
+    url: str = ""
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    content_text: str = ""
+    user_note: str = ""
+
+
+class StatelessChatRequest(BaseModel):
+    article: ArticleChatContext
+    messages: list[ChatTurnInput] = Field(..., min_length=1, max_length=40)
+
+
+class StatelessChatResponse(BaseModel):
+    reply: str
+    model: str = ""
