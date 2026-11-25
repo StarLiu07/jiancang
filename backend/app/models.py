@@ -199,6 +199,9 @@ class SyncPushResponse(BaseModel):
     skipped_ids: list[str] = Field(default_factory=list)
     missing_media_ids: list[str] = Field(default_factory=list)
     queued_ai_ids: list[str] = Field(default_factory=list)
+    # Clips the server accepted but must (re-)extract itself, e.g. when the
+    # mobile client's local extraction was blocked by platform risk control.
+    queued_extract_ids: list[str] = Field(default_factory=list)
     server_version: int = 0
 
 
@@ -215,6 +218,35 @@ class SyncMediaUploadResponse(BaseModel):
     size_bytes: int
     sha256: str
     mime_type: str
+
+
+# ---------------------------------------------------------------------------
+# Stateless remote extraction
+#
+# Fallback used when the device-local extractor is blocked by a platform's
+# risk control: the phone asks the NUC to fetch the page and mirrors back the
+# same shape the local extractor produces (``services.extractors.base.
+# ExtractedContent``).
+# ---------------------------------------------------------------------------
+
+
+class StatelessExtractRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=4096)
+    raw_input: str = Field(default="", max_length=20000)
+
+
+class StatelessExtractResponse(BaseModel):
+    platform: Platform = Platform.WEB
+    url: str
+    title: str = ""
+    author: str = ""
+    published_at: str | None = None
+    content_markdown: str = ""
+    content_text: str = ""
+    image_urls: list[str] = Field(default_factory=list)
+    partial: bool = False
+    error_message: str | None = None
+    referer: str | None = None
 
 
 # ---------------------------------------------------------------------------
