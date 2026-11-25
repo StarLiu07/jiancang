@@ -1,4 +1,5 @@
-import { Image, Platform as RNPlatform, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Image, Platform as RNPlatform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { mediaUrl } from '../api/client';
 import { useSettings } from '../store/settings';
@@ -37,6 +38,8 @@ interface ClipCardProps {
   keyPoints?: string[];
   onPress?: () => void;
   onLongPress?: () => void;
+  /** When provided, a zoom badge on the feature cover opens the full-screen viewer. */
+  onPreviewImage?: () => void;
 }
 
 export function ClipCard({
@@ -46,6 +49,7 @@ export function ClipCard({
   keyPoints,
   onPress,
   onLongPress,
+  onPreviewImage,
 }: ClipCardProps) {
   const { config } = useSettings();
   const cover = mediaUrl(config, clip.cover_media_url);
@@ -75,6 +79,24 @@ export function ClipCard({
               <View style={styles.featureCoverPad}>
                 <View style={styles.featureCoverFrame}>
                   <Image source={{ uri: cover }} style={styles.featureImage} resizeMode="cover" />
+                  {onPreviewImage ? (
+                    <Pressable
+                      onPress={(event) => {
+                        // Keep the card's own press handler out of the picture.
+                        event.stopPropagation?.();
+                        onPreviewImage();
+                      }}
+                      style={({ pressed }) => [
+                        styles.coverZoomBadge,
+                        pressed && styles.coverZoomBadgePressed,
+                      ]}
+                      hitSlop={10}
+                      accessibilityRole="button"
+                      accessibilityLabel="放大查看图片"
+                    >
+                      <Ionicons name="expand-outline" size={14} color={colors.onAccent} />
+                    </Pressable>
+                  ) : null}
                 </View>
               </View>
 
@@ -287,6 +309,22 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     aspectRatio: 4 / 2.65,
     backgroundColor: colors.surface,
+  },
+  coverZoomBadge: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(31, 28, 24, 0.46)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255, 251, 247, 0.32)',
+  },
+  coverZoomBadgePressed: {
+    backgroundColor: 'rgba(31, 28, 24, 0.68)',
   },
   featureImage: {
     width: '100%',

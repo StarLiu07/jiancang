@@ -35,6 +35,7 @@ interface ReviewDeckProps {
   remaining: number;
   disabled?: boolean;
   onOpenDetail: () => void;
+  onPreviewImage?: () => void;
   onAction: (action: ReviewActionType) => void;
   onDraggingChange?: (dragging: boolean) => void;
 }
@@ -46,7 +47,7 @@ interface ReviewDeckProps {
  * - Also exposes imperative `triggerAction` so bottom buttons drive the same physics
  */
 export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function ReviewDeck(
-  { clip, queueLabel, remaining, disabled = false, onOpenDetail, onAction, onDraggingChange },
+  { clip, queueLabel, remaining, disabled = false, onOpenDetail, onPreviewImage, onAction, onDraggingChange },
   ref,
 ) {
   const panX = useRef(new Animated.Value(0)).current;
@@ -288,6 +289,7 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
           queueLabel={queueLabel}
           keyPoints={clip.key_points}
           onPress={onOpenDetail}
+          onPreviewImage={onPreviewImage}
         />
 
         {/* Swipe right intent stamp: 已消化 */}

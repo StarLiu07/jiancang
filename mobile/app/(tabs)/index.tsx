@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -14,11 +14,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { pickErrorMessage } from '../../src/api/client';
+import { mediaUrl, pickErrorMessage } from '../../src/api/client';
 import { ClipboardBanner } from '../../src/components/ClipboardBanner';
+import { ImageLightboxModal } from '../../src/components/ImageLightboxModal';
 import { FadeSlideIn, MOTION, SkeletonHeroCard, SpringPressable } from '../../src/components/Motion';
 import { ReviewDeck, type ReviewDeckHandle } from '../../src/components/ReviewDeck';
 import { useToast } from '../../src/components/Toast';
+import { buildLightboxItems, type LightboxImageItem } from '../../src/components/imageZoomMath';
 import { useClipboardLink } from '../../src/hooks/useClipboardLink';
 import { localRepo, subscribeLocalChanges } from '../../src/local/repository';
 import { useSettings } from '../../src/store/settings';
@@ -76,7 +78,7 @@ function ProgressSegment({ done, current }: { done: boolean; current: boolean })
 }
 
 export default function ReviewTodayScreen() {
-  const { localAiConfig, settings, ready } = useSettings();
+  const { localAiConfig, settings, ready, config } = useSettings();
   const { syncNow } = useSync();
   const { show } = useToast();
   const router = useRouter();
@@ -92,6 +94,7 @@ export default function ReviewTodayScreen() {
   const [capturing, setCapturing] = useState(false);
   const [deckDragging, setDeckDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const requestRef = useRef(0);
   const loadedRef = useRef(false);
@@ -265,6 +268,21 @@ export default function ReviewTodayScreen() {
   }, [ready]);
 
   const current = index < items.length ? items[index] : null;
+
+  // Preview every archived image of the card on screen; fall back to the cover
+  // when the clip has no media rows yet.
+  const lightboxItems = useMemo<LightboxImageItem[]>(() => {
+    if (!current) return [];
+    const { items: mediaItems } = buildLightboxItems(
+      current.media ?? [],
+      (url) => mediaUrl(config, url),
+    );
+    if (mediaItems.length) return mediaItems;
+
+    const cover = mediaUrl(config, current.cover_media_url);
+    return cover ? [{ id: `${current.id}-cover`, uri: cover, caption: '封面' }] : [];
+  }, [config, current]);
+
   const remaining = Math.max(0, items.length - index - 1);
   const finished = !loading && !error && index >= items.length;
   const percent = dailyTarget > 0 ? Math.min(100, Math.round((reviewedToday / dailyTarget) * 100)) : 0;
@@ -476,6 +494,7 @@ export default function ReviewTodayScreen() {
               remaining={remaining}
               disabled={acting}
               onOpenDetail={() => openDetail(current.id)}
+              onPreviewImage={lightboxItems.length ? () => setLightboxIndex(0) : undefined}
               onAction={(action) => void commitAction(action)}
               onDraggingChange={setDeckDragging}
             />
@@ -531,6 +550,13 @@ export default function ReviewTodayScreen() {
           </FadeSlideIn>
         ) : null}
       </ScrollView>
+
+      <ImageLightboxModal
+        visible={lightboxIndex !== null}
+        images={lightboxItems}
+        initialIndex={lightboxIndex ?? 0}
+        onClose={() => setLightboxIndex(null)}
+      />
     </SafeAreaView>
   );
 }
