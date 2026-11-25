@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,9 +17,11 @@ import {
 
 import { mediaUrl, pickErrorMessage } from '../../src/api/client';
 import { StatusPill } from '../../src/components/ClipCard';
+import { ImageLightboxModal } from '../../src/components/ImageLightboxModal';
 import { MarkdownText } from '../../src/components/MarkdownText';
 import { FadeSlideIn, SkeletonDetail, SpringPressable } from '../../src/components/Motion';
 import { useToast } from '../../src/components/Toast';
+import { buildLightboxItems } from '../../src/components/imageZoomMath';
 import { localRepo, subscribeLocalChanges } from '../../src/local/repository';
 import { useSettings } from '../../src/store/settings';
 import { colors, elevation, fonts, platformMeta, radius, spacing } from '../../src/theme';
@@ -83,6 +85,14 @@ export default function ClipDetailScreen() {
   const [error, setError] = useState<string | null>(null);
   const [editorExpanded, setEditorExpanded] = useState(false);
   const [showContentEditor, setShowContentEditor] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  // Filter unresolvable media once and keep the media-index -> preview-index map
+  // so tapping the Nth gallery thumbnail opens the matching full-screen page.
+  const lightbox = useMemo(
+    () => buildLightboxItems(clip?.media ?? [], (url) => mediaUrl(config, url)),
+    [clip?.media, config],
+  );
 
   const dirtyRef = useRef(false);
   const loadedRef = useRef(false);
@@ -424,24 +434,47 @@ export default function ClipDetailScreen() {
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionEyebrow}>存档图片</Text>
               <View style={styles.grow} />
-              <Text style={styles.sectionHint}>{clip.media.length} 张 · 已本地化</Text>
+              <Text style={styles.sectionHint}>{clip.media.length} 张 · 点击放大</Text>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gallery}>
-              {clip.media.map((item) => {
+              {clip.media.map((item, mediaIndex) => {
                 const uri = mediaUrl(config, item.url);
-                return (
-                  <View key={item.id} style={styles.galleryItem}>
-                    {uri ? (
-                      <Image source={{ uri }} style={styles.galleryImage} resizeMode="cover" />
-                    ) : (
+                const label = `#${item.sort_order + 1} · ${item.mime_type.replace('image/', '').toUpperCase()}`;
+
+                if (!uri) {
+                  return (
+                    <View key={item.id} style={styles.galleryItem}>
                       <View style={[styles.galleryImage, styles.galleryFallback]}>
                         <Ionicons name="image-outline" size={24} color={colors.faint} />
                       </View>
-                    )}
+                      <Text style={styles.galleryLabel} numberOfLines={1}>
+                        {label}
+                      </Text>
+                    </View>
+                  );
+                }
+
+                const previewIndex = lightbox.indexMap.get(mediaIndex);
+                return (
+                  <Pressable
+                    key={item.id}
+                    style={styles.galleryItem}
+                    onPress={() => {
+                      if (previewIndex !== undefined) setLightboxIndex(previewIndex);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`放大查看第 ${mediaIndex + 1} 张图片`}
+                  >
+                    <View style={styles.galleryImageWrap}>
+                      <Image source={{ uri }} style={styles.galleryImage} resizeMode="cover" />
+                      <View style={styles.galleryZoomBadge} pointerEvents="none">
+                        <Ionicons name="expand-outline" size={12} color={colors.onAccent} />
+                      </View>
+                    </View>
                     <Text style={styles.galleryLabel} numberOfLines={1}>
-                      #{item.sort_order + 1} · {item.mime_type.replace('image/', '').toUpperCase()}
+                      {label}
                     </Text>
-                  </View>
+                  </Pressable>
                 );
               })}
             </ScrollView>
@@ -640,6 +673,13 @@ export default function ClipDetailScreen() {
 
         {error && clip ? <Text style={styles.staleHint}>刷新提示：{error}</Text> : null}
       </ScrollView>
+
+      <ImageLightboxModal
+        visible={lightboxIndex !== null}
+        images={lightbox.items}
+        initialIndex={lightboxIndex ?? 0}
+        onClose={() => setLightboxIndex(null)}
+      />
     </>
   );
 }
@@ -910,6 +950,23 @@ const styles = StyleSheet.create({
     height: 268,
     borderRadius: 8,
     backgroundColor: colors.surface,
+  },
+  galleryImageWrap: {
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  galleryZoomBadge: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(31, 28, 24, 0.46)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255, 251, 247, 0.30)',
   },
   galleryFallback: {
     alignItems: 'center',
