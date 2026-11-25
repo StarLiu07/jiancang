@@ -34,8 +34,25 @@ const X_HOSTS = new Set([
   'mobile.twitter.com',
   'fxtwitter.com',
   'vxtwitter.com',
+  'fixupx.com',
+  'fixvx.com',
+  't.co',
 ]);
-const XHS_HOSTS = new Set(['xiaohongshu.com', 'xhslink.com']);
+const XHS_HOSTS = new Set(['xiaohongshu.com', 'xhslink.com', 'xhslink.cn', 'xhs.cn']);
+
+/**
+ * X hosts that are pure aliases of `x.com`. `t.co` is deliberately absent: it
+ * is a redirector, and rewriting it to `x.com` would destroy the share token
+ * before `extractX` can follow the redirect.
+ */
+const X_ALIAS_HOSTS = new Set([
+  'twitter.com',
+  'mobile.twitter.com',
+  'fxtwitter.com',
+  'vxtwitter.com',
+  'fixupx.com',
+  'fixvx.com',
+]);
 
 /** Query parameters dropped during normalization. `utm_*` is handled by prefix. */
 const TRACKING_PARAMS = new Set([
@@ -277,7 +294,7 @@ export function normalizeUrl(url: string, platform?: Platform): string {
   if (parts.port) netloc = `${host}:${parts.port}`;
 
   const resolved = platform || detectPlatform(value);
-  if (resolved === 'x' && hostMatches(host, X_HOSTS)) {
+  if (resolved === 'x' && hostMatches(host, X_ALIAS_HOSTS)) {
     netloc = 'x.com';
   }
 

@@ -5,9 +5,17 @@ const URL_PATTERN = /https?:\/\/[^\s<>"'`，。；：！？、（）【】《》
 const TRAILING_JUNK = /[.,;:!?)\]}"'”’]+$/;
 const BARE_DOMAIN_PATTERN = /(?:^|\s)((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s，。；：！？、（）【】《》]*)?)/i;
 
-const XIAOHONGSHU_HOSTS = ['xiaohongshu.com', 'xhslink.com', 'xhs.cn'];
+const XIAOHONGSHU_HOSTS = ['xiaohongshu.com', 'xhslink.com', 'xhslink.cn', 'xhs.cn'];
 const WECHAT_HOSTS = ['mp.weixin.qq.com', 'weixin.qq.com'];
-const X_HOSTS = ['x.com', 'twitter.com', 't.co'];
+const X_HOSTS = [
+  'x.com',
+  'twitter.com',
+  't.co',
+  'fxtwitter.com',
+  'vxtwitter.com',
+  'fixupx.com',
+  'fixvx.com',
+];
 
 function safeUrl(value: string): URL | null {
   try {
@@ -81,11 +89,24 @@ export function detectPlatformFromUrl(url: string): Platform {
   return 'web';
 }
 
-/** Normalizes whatever the Android share sheet gave us into clip input text. */
+/**
+ * Normalizes whatever the Android share sheet gave us into clip input text.
+ *
+ * The original caption is kept: 小红书/公众号 shares look like
+ * `"我的笔记标题 http://xhslink.cn/o/xxx 复制后打开【小红书】"`, and dropping the
+ * title would lose the only text the user ever sees when extraction degrades.
+ */
 export function buildSharePayload(webUrl: string | null | undefined, text: string | null | undefined): string {
-  const url = extractFirstUrl(webUrl) ?? extractFirstUrl(text);
-  if (url) return url;
-  return (text ?? '').trim();
+  const shared = (webUrl ?? '').trim();
+  const caption = (text ?? '').trim();
+  const sharedUrl = extractFirstUrl(shared);
+  const captionUrl = extractFirstUrl(caption);
+
+  // The caption already carries a usable link: keep the whole 口令 verbatim.
+  if (captionUrl) return caption;
+  if (sharedUrl && caption) return `${caption}\n${sharedUrl}`;
+  if (sharedUrl) return sharedUrl;
+  return caption || shared;
 }
 
 export function truncateMiddle(value: string, max = 42): string {

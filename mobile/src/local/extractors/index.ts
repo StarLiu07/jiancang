@@ -9,9 +9,15 @@
 import type { Platform } from '../../types';
 import type { ExtractedContent } from './base';
 import { detectPlatform } from '../urlUtils';
-import { degradedContent, errorLabel, fallbackTitle } from './generic';
-import { extractGeneric } from './generic';
-import { extractWeChat } from './wechat';
+import type { FetchedPage } from './generic';
+import {
+  degradedContent,
+  errorLabel,
+  fallbackTitle,
+  fetchHtml,
+  parseGenericHtml,
+} from './generic';
+import { extractWeChat, parseWeChatHtml } from './wechat';
 import { extractX } from './x';
 import { extractXhs } from './xhs';
 
@@ -20,9 +26,36 @@ export { markdownToText } from './base';
 export { parseGenericHtml, extractGeneric, htmlToMarkdown, htmlToText } from './generic';
 export { parseWeChatHtml, extractWeChat, WECHAT_REFERER } from './wechat';
 export { parseStatusUrl, parseFxTwitterPayload, extractX, FX_API_URL, X_REFERER } from './x';
-export { extractNoteId, parseXhsHtml, extractXhs, XHS_REFERER } from './xhs';
+export { extractNoteId, unwrapXhsRedirect, parseXhsHtml, extractXhs, XHS_HEADERS, XHS_REFERER } from './xhs';
 
 export type ExtractorPlatform = Platform;
+
+/**
+ * Fetch an unknown link and route a second time once the redirect reveals the
+ * real platform (t.co -> x.com, /go?url=... -> xiaohongshu, wx short links...).
+ */
+async function extractWeb(url: string, rawInput: string): Promise<ExtractedContent> {
+  let page: FetchedPage;
+  try {
+    page = await fetchHtml(url);
+  } catch (error) {
+    return degradedContent({
+      platform: 'web',
+      url,
+      rawInput,
+      errorMessage: errorLabel(error),
+    });
+  }
+
+  const finalUrl = (page.finalUrl || url).trim() || url;
+  const redirected = detectPlatform(finalUrl);
+
+  if (redirected === 'x') return extractX(finalUrl, rawInput);
+  if (redirected === 'xiaohongshu') return extractXhs(finalUrl, rawInput);
+  if (redirected === 'wechat') return parseWeChatHtml(page.html, finalUrl, rawInput);
+
+  return parseGenericHtml(page.html, finalUrl, rawInput);
+}
 
 /**
  * Fetch and parse `url` with the extractor matching its platform.
@@ -43,7 +76,7 @@ export async function extractContent(url: string, rawInput = ''): Promise<Extrac
         return await extractXhs(url, rawInput);
       case 'web':
       default:
-        return await extractGeneric(url, rawInput);
+        return await extractWeb(url, rawInput);
     }
   } catch (error) {
     // Last-resort guard: an extractor bug must never lose the user's clip.

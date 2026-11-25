@@ -7,6 +7,7 @@
  */
 
 import { parse } from 'node-html-parser';
+import type { HTMLElement } from 'node-html-parser';
 
 import type { ExtractedContent } from './base';
 import {
@@ -30,9 +31,21 @@ import {
 
 export const WECHAT_REFERER = 'https://mp.weixin.qq.com/';
 
+/** Text WeChat only shows on its "environment anomaly" verification wall. */
+const VERIFY_MARKERS = ['环境异常', '完成验证后即可继续访问', '去验证'];
+const VERIFY_MESSAGE = '触发微信访问验证，无法直接抓取正文';
+
+/** True when the page is the anti-bot wall instead of an article. */
+function isWeChatVerificationPage(root: HTMLElement): boolean {
+  const text = htmlToText(root);
+  return VERIFY_MARKERS.some((marker) => text.includes(marker));
+}
+
 /** Pure HTML parser used by the WeChat extractor (and unit tests). */
 export function parseWeChatHtml(html: string, url: string, rawInput = ''): ExtractedContent {
   const root = parse(html);
+
+  const explicitBody = root.querySelector('#js_content') || root.querySelector('.rich_media_content');
 
   const titleNode = root.querySelector('#activity-name') || root.querySelector('.rich_media_title');
   let title = cleanText(titleNode ? titleNode.text : '');
@@ -57,11 +70,30 @@ export function parseWeChatHtml(html: string, url: string, rawInput = ''): Extra
     null;
 
   const contentNode =
-    root.querySelector('#js_content') ||
-    root.querySelector('.rich_media_content') ||
+    explicitBody ||
     root.querySelector('article') ||
     root.querySelector('body') ||
     root;
+
+  // A verification wall has no #js_content; without this guard the page's
+  // "环境异常 / 去验证" copy was happily stored as a `ready` article.
+  if (!explicitBody && isWeChatVerificationPage(root)) {
+    const caption = (rawInput || '').trim();
+    return {
+      platform: 'wechat',
+      url,
+      title,
+      author,
+      published_at: publishedAt,
+      content_markdown: caption ? `${caption}\n` : '',
+      content_text: caption || title,
+      image_urls: [],
+      partial: true,
+      error_message: VERIFY_MESSAGE,
+      referer: WECHAT_REFERER,
+    };
+  }
+
   dropNoise(contentNode);
 
   const contentImages = collectImages(contentNode, url);

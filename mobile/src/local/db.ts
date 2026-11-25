@@ -36,6 +36,7 @@ import type {
   TagListResponse,
 } from '../types';
 import { normalizeTag, normalizeTags, nowIso, toIsoUtc } from './reviewLogic';
+import { resolveMediaFileUri } from './media';
 
 export const LOCAL_DB_NAME = 'jiancang.db';
 
@@ -569,15 +570,17 @@ function normalizeOffset(offset: unknown): number {
 }
 
 function mediaFileUrl(row: MediaRow): string {
-  const localPath = asString(row.local_path);
-  if (localPath.startsWith('file://')) return localPath;
-  return `/api/media/${row.id}`;
+  // `local_path` is usually relative (`clips/<id>/<sha256>.jpg`), so this must
+  // resolve against documentDirectory too — otherwise every downloaded image
+  // silently falls back to the (unreachable) NUC `/api/media/{id}` URL.
+  const localUri = resolveMediaFileUri(asString(row.local_path), FileSystem.documentDirectory);
+  return localUri ?? `/api/media/${row.id}`;
 }
 
 function coverUrl(coverMediaId: string | null, localPath: string | null | undefined): string | null {
   if (!coverMediaId) return null;
-  const path = asString(localPath);
-  return path.startsWith('file://') ? path : `/api/media/${coverMediaId}`;
+  const localUri = resolveMediaFileUri(asString(localPath), FileSystem.documentDirectory);
+  return localUri ?? `/api/media/${coverMediaId}`;
 }
 
 async function scalarNumber(
@@ -590,9 +593,10 @@ async function scalarNumber(
 }
 
 async function localFileExists(localPath: string): Promise<boolean> {
-  if (!asString(localPath).startsWith('file://')) return false;
+  const uri = resolveMediaFileUri(asString(localPath), FileSystem.documentDirectory);
+  if (!uri) return false;
   try {
-    const info = await FileSystem.getInfoAsync(localPath);
+    const info = await FileSystem.getInfoAsync(uri);
     return Boolean(info?.exists);
   } catch {
     return false;

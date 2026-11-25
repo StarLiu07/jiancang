@@ -13,6 +13,7 @@ import {
   degradedContent,
   errorLabel,
   fallbackTitle,
+  fetchHtml,
   fetchJson,
   firstLine,
   isRecord,
@@ -80,9 +81,14 @@ function mediaImages(media: unknown, includeAll = true): string[] {
   return urls;
 }
 
-/** Return `[heading, body, imageUrls]` for an X Article payload. */
-function articleSection(article: unknown): [string, string, string[]] {
-  if (!isRecord(article)) return ['', '', []];
+/** Return the article's heading plus the plain-text pieces used for `content_text`. */
+function articleSection(article: unknown): {
+  heading: string;
+  title: string;
+  body: string;
+  images: string[];
+} {
+  if (!isRecord(article)) return { heading: '', title: '', body: '', images: [] };
 
   const title = cleanText(article.title);
   const blocks: string[] = [];
@@ -106,7 +112,7 @@ function articleSection(article: unknown): [string, string, string[]] {
   images.push(...mediaImages(article.media));
 
   const heading = title ? `## ${title}` : '## X Article';
-  return [heading, body, images];
+  return { heading, title, body, images };
 }
 
 function buildFromTweet(url: string, tweet: Record<string, unknown>, rawInput: string): ExtractedContent {
@@ -130,9 +136,10 @@ function buildFromTweet(url: string, tweet: Record<string, unknown>, rawInput: s
   if (text) sections.push(text);
 
   const quote = tweet.quote;
+  let quoteText = '';
   if (isRecord(quote)) {
     const quoteAuthor = isRecord(quote.author) ? cleanText(quote.author.screen_name) : '';
-    const quoteText = String(quote.text ?? '').trim();
+    quoteText = String(quote.text ?? '').trim();
     const quoteLines: string[] = [quoteAuthor ? `> 引用 @${quoteAuthor}:` : '> 引用:'];
     for (const line of quoteText.split('\n')) {
       quoteLines.push(`> ${line}`.replace(/\s+$/, ''));
@@ -143,11 +150,11 @@ function buildFromTweet(url: string, tweet: Record<string, unknown>, rawInput: s
     }
   }
 
-  const [heading, articleBody, articleImages] = articleSection(tweet.article);
-  if (articleBody || articleImages.length) {
-    sections.push(heading);
-    if (articleBody) sections.push(articleBody);
-    for (const articleImage of articleImages) {
+  const article = articleSection(tweet.article);
+  if (article.body || article.images.length) {
+    sections.push(article.heading);
+    if (article.body) sections.push(article.body);
+    for (const articleImage of article.images) {
       if (!imageUrls.includes(articleImage)) imageUrls.push(articleImage);
     }
   }
@@ -155,7 +162,15 @@ function buildFromTweet(url: string, tweet: Record<string, unknown>, rawInput: s
   const contentMarkdown = tidyMarkdown(
     composeMarkdown({ body: sections.join('\n\n'), imageUrls }),
   );
-  const contentText = tidyMarkdown(text);
+  // Quote-only / X-Article-only tweets have an empty `text`; without the
+  // fallback the clip's `content_text` (FTS + AI input) stayed empty.
+  const fallbackText = [
+    quoteText,
+    [article.title, article.body].filter(Boolean).join('\n\n'),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const contentText = tidyMarkdown(text) || tidyMarkdown(fallbackText);
 
   return {
     platform: 'x',
@@ -166,7 +181,7 @@ function buildFromTweet(url: string, tweet: Record<string, unknown>, rawInput: s
     content_markdown: contentMarkdown,
     content_text: contentText,
     image_urls: imageUrls,
-    partial: !(text || imageUrls.length || articleBody),
+    partial: !(text || imageUrls.length || article.body),
     error_message: null,
     referer: X_REFERER,
   };
@@ -202,7 +217,23 @@ export function parseFxTwitterPayload(payload: unknown, url: string, rawInput = 
 
 /** Fetch a status via fxtwitter; never throws. */
 export async function extractX(url: string, rawInput = ''): Promise<ExtractedContent> {
-  const [screenName, statusId] = parseStatusUrl(url);
+  let target = url;
+  let [screenName, statusId] = parseStatusUrl(target);
+
+  // `t.co/...` (and other redirectors) hide the status id behind a redirect.
+  if (!statusId) {
+    try {
+      const page = await fetchHtml(target);
+      const finalUrl = (page.finalUrl || '').trim();
+      if (finalUrl && finalUrl !== target) {
+        target = finalUrl;
+        [screenName, statusId] = parseStatusUrl(target);
+      }
+    } catch (error) {
+      return degradedX(url, rawInput, errorLabel(error));
+    }
+  }
+
   if (!statusId) {
     return degradedX(url, rawInput, '无法从链接中解析推文 ID');
   }

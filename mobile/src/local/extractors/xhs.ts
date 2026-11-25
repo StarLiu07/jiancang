@@ -33,8 +33,35 @@ import { normalizeUrl, splitUrlParts } from '../urlUtils';
 export const XHS_REFERER = 'https://www.xiaohongshu.com/';
 export const STATE_MARKER = 'window.__INITIAL_STATE__';
 
+/**
+ * XHS-only transport headers.
+ *
+ * The Xiaohongshu WAF 302s `/login?redirectPath=...` for any request whose
+ * `Accept-Encoding` advertises a compressible coding: Android OkHttp sends
+ * `gzip` by default and Node/Undici sends `br, gzip, deflate`. Manually
+ * setting `gzip, deflate` in OkHttp *passes* the WAF but disables OkHttp's
+ * transparent decompression, producing mojibake. Asking for `identity` only
+ * (`gzip;q=0, deflate;q=0, identity`) satisfies both: 200 + plain UTF-8 HTML
+ * with the full `window.__INITIAL_STATE__` payload.
+ *
+ * Never merge this into `BROWSER_HEADERS`: WeChat and friends ignore `q=0`
+ * and still gzip, which OkHttp would then hand back compressed.
+ */
+export const XHS_HEADERS: Record<string, string> = {
+  ...BROWSER_HEADERS,
+  'Accept-Encoding': 'gzip;q=0, deflate;q=0, identity',
+};
+
+/** Shown when the WAF/login wall is all we got back. */
+export const XHS_LOGIN_BLOCK_MESSAGE = '触发小红书登录拦截，无法直接读取笔记';
+
+const LOGIN_PATH_RE = /^\/(?:website-)?login(?:\/|$)/;
+const NOT_FOUND_PATH_RE = /^\/404(?:\/|$)/;
+const SITE_NAME_TITLES = new Set(['小红书', '小红书 - 你的生活兴趣社区']);
+const XHSCDN_HTTP_RE = /^http:\/\/(?:[^/]*\.)?xhscdn\.com\//i;
+const INLINE_SPACE_RE = /[ \t\u00a0\u3000]+/g;
+
 const NOTE_ID_RE = /\/(?:explore|discovery\/item|item)\/([0-9a-zA-Z]+)/;
-const IMAGE_KEYS = ['urlDefault', 'urlPre', 'url', 'masterUrl', 'master_url', 'url_default'];
 
 function truthy(value: unknown): boolean {
   if (Array.isArray(value)) return value.length > 0;
@@ -42,6 +69,53 @@ function truthy(value: unknown): boolean {
   if (typeof value === 'string') return value.length > 0;
   if (typeof value === 'number') return value !== 0 && !Number.isNaN(value);
   return Boolean(value);
+}
+
+function decodeQueryValue(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, ' '));
+  } catch {
+    return raw;
+  }
+}
+
+/** True when the URL (or path) is the login / 404 shell XHS bounces us to. */
+function isLoginLandingPage(url: string): boolean {
+  const path = splitUrlParts(url).path || '';
+  return LOGIN_PATH_RE.test(path) || NOT_FOUND_PATH_RE.test(path);
+}
+
+/**
+ * Unwrap `/login?redirectPath=<real note>` into the note URL.
+ *
+ * Needed twice: the WAF redirect itself, and old clips that already stored the
+ * `/login?...` URL (re-fetching them must recover the real note).
+ */
+export function unwrapXhsRedirect(url: string): string {
+  let current = (url || '').trim();
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    const parts = splitUrlParts(current);
+    if (!LOGIN_PATH_RE.test(parts.path || '')) return current;
+
+    let target = '';
+    for (const chunk of parts.query.split('&')) {
+      if (!chunk) continue;
+      const equalsAt = chunk.indexOf('=');
+      const key = decodeQueryValue(equalsAt >= 0 ? chunk.slice(0, equalsAt) : chunk).toLowerCase();
+      if (key !== 'redirectpath' && key !== 'redirect_path') continue;
+      target = decodeQueryValue(equalsAt >= 0 ? chunk.slice(equalsAt + 1) : '').trim();
+      if (target) break;
+    }
+    if (!target) return current;
+
+    if (target.startsWith('//')) target = `https:${target}`;
+    if (target.startsWith('/')) {
+      target = `${(parts.scheme || 'https').toLowerCase()}://${parts.netloc}${target}`;
+    }
+    if (!/^https?:\/\//i.test(target)) return current;
+    current = target;
+  }
+  return current;
 }
 
 /** Extract a note id from a canonical XHS URL (path or query string). */
@@ -180,10 +254,36 @@ export function findNote(state: unknown): Record<string, unknown> | null {
   return deepFindNote(state);
 }
 
+/** XHS CDN hosts are HTTP-only in the payload; force HTTPS so RN can load them. */
+function upgradeToHttps(url: string): string {
+  return XHSCDN_HTTP_RE.test(url) ? `https://${url.slice('http://'.length)}` : url;
+}
+
+/** Pick exactly one rendition for an `imageList` entry, best quality first. */
+function preferredImageUrl(item: Record<string, unknown>): string {
+  const infoList = asArray(item.infoList).filter(isRecord);
+  const defaultScene = infoList.find((entry) => cleanText(entry.imageScene) === 'WB_DFT');
+  const candidates: unknown[] = [
+    item.urlDefault,
+    item.masterUrl,
+    item.master_url,
+    item.url_default,
+    defaultScene ? defaultScene.url : undefined,
+    item.url,
+    item.urlPre,
+    ...infoList.map((entry) => entry.url),
+  ];
+  for (const candidate of candidates) {
+    const url = upgradeToHttps(cleanText(candidate));
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  }
+  return '';
+}
+
 function noteImages(note: Record<string, unknown>): string[] {
   const urls: string[] = [];
   const add = (value: unknown): void => {
-    const url = cleanText(value);
+    const url = upgradeToHttps(cleanText(value));
     if ((url.startsWith('http://') || url.startsWith('https://')) && !urls.includes(url)) {
       urls.push(url);
     }
@@ -195,15 +295,10 @@ function noteImages(note: Record<string, unknown>): string[] {
       continue;
     }
     if (!isRecord(item)) continue;
-    for (const key of IMAGE_KEYS) {
-      if (item[key]) {
-        add(item[key]);
-        break;
-      }
-    }
-    for (const entry of asArray(item.infoList)) {
-      if (isRecord(entry)) add(entry.url);
-    }
+    // Exactly one (best) rendition per imageList entry: XHS ships the same photo
+    // under urlDefault/urlPre/url/masterUrl + infoList, which used to leak 3-4
+    // duplicates of every picture into the clip.
+    add(preferredImageUrl(item));
   }
 
   for (const key of ['images', 'image_list', 'imageUrls']) {
@@ -211,12 +306,7 @@ function noteImages(note: Record<string, unknown>): string[] {
       if (typeof item === 'string') {
         add(item);
       } else if (isRecord(item)) {
-        for (const imageKey of IMAGE_KEYS) {
-          if (item[imageKey]) {
-            add(item[imageKey]);
-            break;
-          }
-        }
+        add(preferredImageUrl(item));
       }
     }
   }
@@ -247,15 +337,40 @@ function noteTime(note: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Collapse inline whitespace but keep the author's paragraph breaks.
+ *
+ * `cleanText` used to flatten multi-paragraph 小红书 notes into one line, which
+ * destroyed every list and line break in the stored body.
+ */
+function normalizeParagraphs(value: unknown): string {
+  if (typeof value !== 'string') return cleanText(value);
+  const lines = value
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(INLINE_SPACE_RE, ' ').trim());
+
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (!line) {
+      // At most one blank line between paragraphs (=> `\n\n` when joined).
+      if (kept.length && kept[kept.length - 1] !== '') kept.push('');
+      continue;
+    }
+    kept.push(line);
+  }
+  while (kept.length && kept[kept.length - 1] === '') kept.pop();
+  return kept.join('\n');
+}
+
 /** Prefer plain description; fall back to converting a rich-text body if present. */
 function noteBodyText(note: Record<string, unknown>): string {
-  const desc = cleanText(note.desc || note.description);
+  const desc = normalizeParagraphs(note.desc ?? note.description);
   if (desc) return desc;
   for (const key of ['content', 'noteContent', 'body']) {
     const value = note[key];
-    if (typeof value === 'string' && value.trim()) {
-      return cleanText(htmlToMarkdown(value));
-    }
+    if (typeof value !== 'string' || !value.trim()) continue;
+    return htmlToMarkdown(value) || normalizeParagraphs(value);
   }
   return '';
 }
@@ -343,12 +458,23 @@ function degradedXhs(url: string, rawInput: string, message: string): ExtractedC
   });
 }
 
+function looksLikeLoginShell(url: string, og: Record<string, string>): boolean {
+  if (isLoginLandingPage(url)) return true;
+  // The login/404 shell only carries the site name plus a logo image.
+  if (!SITE_NAME_TITLES.has(cleanText(og.title))) return false;
+  return !cleanText(og.description);
+}
+
 /** Pure HTML parser used by the XHS extractor (and unit tests). */
 export function parseXhsHtml(html: string, url: string, rawInput = ''): ExtractedContent {
   const note = findNote(extractInitialState(html));
   if (note) return buildFromNote(note, url, rawInput);
 
   const og = ogFallback(html);
+  // Never turn a login/404 shell into a "clip" of the site name + logo.
+  if (looksLikeLoginShell(url, og)) {
+    return degradedXhs(unwrapXhsRedirect(url), rawInput, XHS_LOGIN_BLOCK_MESSAGE);
+  }
   if (og.title || og.description) return buildFromOg(og, url, rawInput);
 
   return degradedXhs(url, rawInput, '未在页面中找到 window.__INITIAL_STATE__ 笔记数据');
@@ -356,23 +482,42 @@ export function parseXhsHtml(html: string, url: string, rawInput = ''): Extracte
 
 /** Fetch and parse a Xiaohongshu note; never throws. */
 export async function extractXhs(url: string, rawInput = ''): Promise<ExtractedContent> {
-  let finalUrl = url;
   const errors: string[] = [];
+  // A previously polluted clip may still hold `/login?redirectPath=<note>`.
+  const requested = unwrapXhsRedirect(url);
 
   try {
-    const page = await fetchHtml(url, BROWSER_HEADERS);
-    finalUrl = page.finalUrl || url;
+    let page = await fetchHtml(requested, XHS_HEADERS);
+    let finalUrl = (page.finalUrl || requested).trim() || requested;
+    let noteUrl = unwrapXhsRedirect(finalUrl);
 
-    const note = findNote(extractInitialState(page.html));
-    if (note) return buildFromNote(note, finalUrl, rawInput);
+    if (noteUrl !== finalUrl) {
+      // The WAF bounced us into the login shell; the real note survived in
+      // `redirectPath`, so retry once with the unwrapped URL.
+      try {
+        page = await fetchHtml(noteUrl, XHS_HEADERS);
+        finalUrl = (page.finalUrl || noteUrl).trim() || noteUrl;
+        noteUrl = unwrapXhsRedirect(finalUrl);
+      } catch (error) {
+        errors.push(errorLabel(error));
+      }
+    }
 
-    const og = ogFallback(page.html);
-    if (og.title || og.description) return buildFromOg(og, finalUrl, rawInput);
+    if (isLoginLandingPage(finalUrl)) {
+      return degradedXhs(noteUrl, rawInput, XHS_LOGIN_BLOCK_MESSAGE);
+    }
 
-    errors.push('未在页面中找到 window.__INITIAL_STATE__ 笔记数据');
+    const content = parseXhsHtml(page.html, noteUrl, rawInput);
+    if (errors.length && content.partial) {
+      return {
+        ...content,
+        error_message: [errors.join('；'), content.error_message ?? ''].filter(Boolean).join('；'),
+      };
+    }
+    return content;
   } catch (error) {
     errors.push(errorLabel(error));
   }
 
-  return degradedXhs(finalUrl || url, rawInput, errors.join('；') || '小红书内容提取失败');
+  return degradedXhs(requested || url, rawInput, errors.join('；') || '小红书内容提取失败');
 }

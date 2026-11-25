@@ -8,20 +8,35 @@ import {
   normalizeUrl,
   splitUrlParts,
 } from '../src/local/urlUtils.ts';
+import { buildSharePayload, detectPlatformFromUrl } from '../src/utils/url.ts';
 import {
+  BROWSER_HEADERS,
+  DEFAULT_USER_AGENT as EXTRACTOR_USER_AGENT,
+  EMPTY_BODY_MESSAGE,
   cleanImageUrl,
+  extractGeneric,
   fallbackTitle,
   htmlToMarkdown,
   htmlToText,
+  parseGenericHtml,
 } from '../src/local/extractors/generic.ts';
 import { markdownToText } from '../src/local/extractors/base.ts';
-import { parseGenericHtml } from '../src/local/extractors/generic.ts';
+import { extractContent } from '../src/local/extractors/index.ts';
 import { parseWeChatHtml } from '../src/local/extractors/wechat.ts';
-import { parseFxTwitterPayload, parseStatusUrl } from '../src/local/extractors/x.ts';
-import { extractNoteId, parseXhsHtml } from '../src/local/extractors/xhs.ts';
+import { extractX, parseFxTwitterPayload, parseStatusUrl } from '../src/local/extractors/x.ts';
 import {
+  XHS_HEADERS,
+  XHS_LOGIN_BLOCK_MESSAGE,
+  extractNoteId,
+  extractXhs,
+  parseXhsHtml,
+  unwrapXhsRedirect,
+} from '../src/local/extractors/xhs.ts';
+import {
+  DEFAULT_USER_AGENT,
   dedupeImageUrls,
   extensionForMime,
+  resolveMediaFileUri,
   rewriteMarkdownImages,
   sha256Hex,
 } from '../src/local/media.ts';
@@ -33,6 +48,46 @@ import {
   parseEnrichment,
   stripCodeFence,
 } from '../src/local/ai.ts';
+
+// ---------------------------------------------------------------------------
+// fetch mocking (extractor network paths)
+// ---------------------------------------------------------------------------
+
+/** Minimal `Response` stand-in with an overridable `url` (Node's is read-only). */
+function fakeResponse(
+  body,
+  { url = '', status = 200, contentType = 'text/html; charset=utf-8' } = {},
+) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    url,
+    headers: { get: (name) => (String(name).toLowerCase() === 'content-type' ? contentType : null) },
+    text: async () => body,
+    json: async () => JSON.parse(body),
+  };
+}
+
+/**
+ * Run `fn` with `globalThis.fetch` stubbed, restoring the real fetch afterwards.
+ * `calls` records every request so tests can assert on the sent headers.
+ */
+async function withFetchMock(handler, fn) {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : String(input?.url ?? input);
+    calls.push({ url, init, headers: (init && init.headers) || {} });
+    const response = await handler(url, init);
+    if (!response) throw new Error(`unexpected fetch: ${url}`);
+    return response;
+  };
+  try {
+    return await fn(calls);
+  } finally {
+    globalThis.fetch = original;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // urlUtils
@@ -62,6 +117,46 @@ test('detectPlatform maps all supported hosts', () => {
   assert.equal(detectPlatform('https://www.xiaohongshu.com/explore/abc'), 'xiaohongshu');
   assert.equal(detectPlatform('https://xhslink.com/a/b1c2d3'), 'xiaohongshu');
   assert.equal(detectPlatform('https://example.com/blog/1'), 'web');
+});
+
+test('detectPlatform recognises the new short-link hosts', () => {
+  assert.equal(detectPlatform('https://xhslink.cn/o/b1c2d3'), 'xiaohongshu');
+  assert.equal(detectPlatform('https://www.xhs.cn/o/b1c2d3'), 'xiaohongshu');
+  assert.equal(detectPlatform('https://t.co/b1c2d3'), 'x');
+  assert.equal(detectPlatform('https://fixupx.com/a/status/1'), 'x');
+  assert.equal(detectPlatform('https://fixvx.com/a/status/1'), 'x');
+  assert.equal(detectPlatform('https://vxtwitter.com/a/status/1'), 'x');
+
+  assert.equal(detectPlatformFromUrl('https://xhslink.cn/o/b1c2d3'), 'xiaohongshu');
+  assert.equal(detectPlatformFromUrl('https://xhs.cn/o/b1c2d3'), 'xiaohongshu');
+  assert.equal(detectPlatformFromUrl('https://t.co/b1c2d3'), 'x');
+  assert.equal(detectPlatformFromUrl('https://fixupx.com/a/status/1'), 'x');
+  assert.equal(detectPlatformFromUrl('https://fixvx.com/a/status/1'), 'x');
+  assert.equal(detectPlatformFromUrl('https://fxtwitter.com/a/status/1'), 'x');
+});
+
+test('normalizeUrl keeps t.co but rewrites every other X alias', () => {
+  // t.co is a redirector: rewriting it to x.com would destroy the share token.
+  assert.equal(normalizeUrl('https://t.co/b1c2d3'), 'https://t.co/b1c2d3');
+  assert.equal(normalizeUrl('https://fixupx.com/a/status/1?s=20'), 'https://x.com/a/status/1');
+  assert.equal(normalizeUrl('https://fixvx.com/a/status/1'), 'https://x.com/a/status/1');
+  assert.equal(normalizeUrl('https://vxtwitter.com/a/status/1'), 'https://x.com/a/status/1');
+});
+
+test('buildSharePayload keeps the original share caption', () => {
+  const xhsCaption = '我的笔记标题 http://xhslink.cn/o/b1c2d3 复制后打开【小红书】';
+  // The caption already holds a link: keep the title text, not just the URL.
+  assert.equal(buildSharePayload('', xhsCaption), xhsCaption);
+  assert.equal(
+    buildSharePayload('https://www.xiaohongshu.com/explore/64f0abc', xhsCaption),
+    xhsCaption,
+  );
+
+  const wechatUrl = 'https://mp.weixin.qq.com/s/abc';
+  assert.equal(buildSharePayload(wechatUrl, '公众号标题'), `公众号标题\n${wechatUrl}`);
+  assert.equal(buildSharePayload(wechatUrl, ''), wechatUrl);
+  assert.equal(buildSharePayload('', '只有文案没有链接'), '只有文案没有链接');
+  assert.equal(buildSharePayload(null, '   '), '');
 });
 
 test('normalizeUrl strips tracking params and drops the fragment', () => {
@@ -193,6 +288,17 @@ test('parseGenericHtml falls back to the share caption and marks empty pages par
   assert.equal(captioned.content_markdown, '# 看这篇 真的很棒\n');
 });
 
+test('parseGenericHtml explains why an empty body is partial', () => {
+  const content = parseGenericHtml(
+    '<html><head><title>Empty</title></head><body><article></article></body></html>',
+    'https://example.com/a',
+    '',
+  );
+  assert.equal(content.partial, true);
+  assert.equal(content.error_message, EMPTY_BODY_MESSAGE);
+  assert.equal(EMPTY_BODY_MESSAGE, '未能提取到正文内容（可能是动态渲染页或需要登录）');
+});
+
 test('cleanImageUrl resolves relative URLs and rejects data URIs', () => {
   assert.equal(cleanImageUrl('//cdn.example.com/x.png'), 'https://cdn.example.com/x.png');
   assert.equal(cleanImageUrl('/img/a.png', 'https://example.com/p/1'), 'https://example.com/img/a.png');
@@ -278,6 +384,24 @@ test('parseWeChatHtml degrades to a partial clip when #js_content is empty', () 
   assert.equal(content.referer, 'https://mp.weixin.qq.com/');
 });
 
+test('parseWeChatHtml degrades the verification wall instead of marking it ready', () => {
+  const html = `<html><head><title>微信公众平台</title></head><body>
+      <div class="weui-msg">
+        <h2>环境异常</h2>
+        <p>当前环境异常，完成验证后即可继续访问。</p>
+        <a class="weui-btn" href="/mp/verify">去验证</a>
+      </div>
+    </body></html>`;
+  const raw = '分享文案 https://mp.weixin.qq.com/s/wechat-article';
+  const content = parseWeChatHtml(html, WECHAT_URL, raw);
+
+  assert.equal(content.platform, 'wechat');
+  assert.equal(content.partial, true);
+  assert.equal(content.error_message, '触发微信访问验证，无法直接抓取正文');
+  assert.equal(content.content_text, raw);
+  assert.doesNotMatch(content.content_markdown, /环境异常|去验证/);
+});
+
 // ---------------------------------------------------------------------------
 // X extractor
 // ---------------------------------------------------------------------------
@@ -360,6 +484,85 @@ test('parseFxTwitterPayload degrades on API errors and unexpected payloads', () 
   assert.equal(weird.error_message, 'fxtwitter 返回了非预期格式');
 });
 
+test('parseFxTwitterPayload falls back to article/quote text when the tweet body is empty', () => {
+  const articleOnly = parseFxTwitterPayload(
+    {
+      code: 200,
+      tweet: {
+        text: '',
+        url: 'https://x.com/foo/status/9',
+        author: { screen_name: 'foo' },
+        article: {
+          title: '长文标题',
+          content: { blocks: [{ text: '第一段' }, { text: '第二段' }] },
+        },
+      },
+    },
+    'https://x.com/foo/status/9',
+    '',
+  );
+  assert.equal(articleOnly.content_text, '长文标题\n\n第一段\n\n第二段');
+  assert.match(articleOnly.content_markdown, /## 长文标题/);
+
+  const quoteOnly = parseFxTwitterPayload(
+    {
+      code: 200,
+      tweet: {
+        text: '',
+        url: 'https://x.com/foo/status/10',
+        author: { screen_name: 'foo' },
+        quote: { author: { screen_name: 'quoted' }, text: '引用正文' },
+      },
+    },
+    'https://x.com/foo/status/10',
+    '',
+  );
+  assert.equal(quoteOnly.content_text, '引用正文');
+});
+
+test('extractX resolves t.co redirects before calling fxtwitter', async () => {
+  const content = await withFetchMock(
+    (url) => {
+      if (url === 'https://t.co/b1c2d3') {
+        return fakeResponse('<html><body>redirect</body></html>', {
+          url: 'https://x.com/foo/status/123',
+        });
+      }
+      if (url === 'https://api.fxtwitter.com/foo/status/123') {
+        return fakeResponse(
+          JSON.stringify({
+            code: 200,
+            tweet: {
+              text: '短链解析后的推文',
+              url: 'https://x.com/foo/status/123',
+              author: { name: 'Foo', screen_name: 'foo' },
+            },
+          }),
+          { contentType: 'application/json; charset=utf-8' },
+        );
+      }
+      return null;
+    },
+    async () => extractX('https://t.co/b1c2d3', '推文分享文案'),
+  );
+
+  assert.equal(content.platform, 'x');
+  assert.equal(content.partial, false);
+  assert.equal(content.title, '短链解析后的推文');
+  assert.equal(content.content_text, '短链解析后的推文');
+  assert.equal(content.url, 'https://x.com/foo/status/123');
+});
+
+test('extractX degrades when a t.co link cannot resolve to a status id', async () => {
+  const content = await withFetchMock(
+    () => fakeResponse('<html></html>', { url: 'https://x.com/foo' }),
+    async () => extractX('https://t.co/nope', '分享文案'),
+  );
+  assert.equal(content.partial, true);
+  assert.equal(content.error_message, '无法从链接中解析推文 ID');
+  assert.equal(content.content_text, '分享文案');
+});
+
 // ---------------------------------------------------------------------------
 // Xiaohongshu extractor
 // ---------------------------------------------------------------------------
@@ -439,6 +642,166 @@ test('parseXhsHtml degrades to raw input when no note data exists', () => {
   assert.equal(content.referer, 'https://www.xiaohongshu.com/');
 });
 
+function xhsStateHtml(note) {
+  const state = JSON.stringify({ note: { noteDetailMap: { n1: { note } } } });
+  return `<html><body><script>window.__INITIAL_STATE__=${state};</script></body></html>`;
+}
+
+test('XHS_HEADERS disables compression to slip past the WAF', () => {
+  assert.equal(XHS_HEADERS['Accept-Encoding'], 'gzip;q=0, deflate;q=0, identity');
+  assert.equal(XHS_HEADERS['User-Agent'], EXTRACTOR_USER_AGENT);
+  // WeChat (and most sites) ignore `q=0` and still gzip, so this must stay XHS-only.
+  assert.equal(Object.prototype.hasOwnProperty.call(BROWSER_HEADERS, 'Accept-Encoding'), false);
+});
+
+test('unwrapXhsRedirect recovers the note URL from the login shell', () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN&xsec_source=pc_feed';
+  const login = `https://www.xiaohongshu.com/login?redirectPath=${encodeURIComponent(noteUrl)}`;
+  assert.equal(unwrapXhsRedirect(login), noteUrl);
+  assert.equal(
+    unwrapXhsRedirect(
+      `https://www.xiaohongshu.com/website-login/cookie?redirectPath=${encodeURIComponent(
+        '/explore/64f0def?xsec_token=T',
+      )}`,
+    ),
+    'https://www.xiaohongshu.com/explore/64f0def?xsec_token=T',
+  );
+  assert.equal(unwrapXhsRedirect('https://www.xiaohongshu.com/login'), 'https://www.xiaohongshu.com/login');
+  assert.equal(unwrapXhsRedirect(noteUrl), noteUrl);
+  assert.equal(unwrapXhsRedirect(''), '');
+});
+
+test('parseXhsHtml refuses to clip the login shell as og metadata', () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN';
+  const html = `<html><head>
+      <meta property="og:title" content="小红书 - 你的生活兴趣社区">
+      <meta property="og:image" content="https://sns.xhscdn.com/logo.png">
+    </head><body><div class="login-box">登录</div></body></html>`;
+
+  const bounced = parseXhsHtml(
+    html,
+    `https://www.xiaohongshu.com/login?redirectPath=${encodeURIComponent(noteUrl)}`,
+    '我的笔记标题 http://xhslink.cn/o/b1c2d3 复制后打开【小红书】',
+  );
+  assert.equal(bounced.partial, true);
+  assert.equal(bounced.error_message, XHS_LOGIN_BLOCK_MESSAGE);
+  assert.deepEqual(bounced.image_urls, []);
+  assert.equal(bounced.url, noteUrl);
+  assert.doesNotMatch(bounced.title, /你的生活兴趣社区/);
+  assert.match(bounced.content_text, /我的笔记标题/);
+
+  // Same shell served with HTTP 200 on a note URL: the site-name og:title is
+  // the only signal left, and it must still degrade instead of building a clip.
+  const shell = parseXhsHtml(
+    '<html><head><meta property="og:title" content="小红书"></head><body></body></html>',
+    noteUrl,
+    '',
+  );
+  assert.equal(shell.partial, true);
+  assert.equal(shell.error_message, XHS_LOGIN_BLOCK_MESSAGE);
+});
+
+test('parseXhsHtml keeps one https image per imageList entry', () => {
+  const content = parseXhsHtml(
+    xhsStateHtml({
+      title: '多图笔记',
+      desc: '第一段\n\n  第二段   有   空格\n\n\n第三段',
+      user: { nickname: '作者' },
+      imageList: [
+        {
+          urlDefault: 'http://sns-webpic-qc.xhscdn.com/a.jpg',
+          masterUrl: 'https://sns-webpic-qc.xhscdn.com/a-master.jpg',
+          urlPre: 'http://sns-webpic-qc.xhscdn.com/a-pre.jpg',
+          url: 'http://sns-webpic-qc.xhscdn.com/a-url.jpg',
+          url_default: 'http://sns-webpic-qc.xhscdn.com/a-default.jpg',
+          infoList: [
+            { imageScene: 'WB_PRV', url: 'http://sns-webpic-qc.xhscdn.com/a-prev.jpg' },
+            { imageScene: 'WB_DFT', url: 'http://sns-webpic-qc.xhscdn.com/a-dft.jpg' },
+          ],
+        },
+        {
+          // No urlDefault/masterUrl: the WB_DFT rendition wins.
+          infoList: [
+            { imageScene: 'WB_PRV', url: 'http://sns-webpic-qc.xhscdn.com/b-prev.jpg' },
+            { imageScene: 'WB_DFT', url: 'http://sns-webpic-qc.xhscdn.com/b-dft.jpg' },
+          ],
+        },
+        {
+          urlPre: 'http://sns-webpic-qc.xhscdn.com/c-pre.jpg',
+          url: 'http://sns-webpic-qc.xhscdn.com/c-url.jpg',
+        },
+      ],
+      time: 1700000000,
+    }),
+    'https://www.xiaohongshu.com/explore/64f0abc',
+    '',
+  );
+
+  assert.deepEqual(content.image_urls, [
+    'https://sns-webpic-qc.xhscdn.com/a.jpg',
+    'https://sns-webpic-qc.xhscdn.com/b-dft.jpg',
+    'https://sns-webpic-qc.xhscdn.com/c-url.jpg',
+  ]);
+  // Paragraphs survive; inline whitespace is collapsed.
+  assert.equal(content.content_text, '第一段\n\n第二段 有 空格\n\n第三段');
+  assert.match(content.content_markdown, /第一段\n\n第二段 有 空格\n\n第三段/);
+});
+
+test('extractXhs retries the unwrapped note URL after a WAF login redirect', async () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN';
+  const loginHtml = `<html><head>
+      <meta property="og:title" content="小红书 - 你的生活兴趣社区">
+      <meta property="og:image" content="https://sns.xhscdn.com/logo.png">
+    </head><body>登录</body></html>`;
+  const noteHtml = xhsStateHtml({
+    title: '绕过风控的笔记',
+    desc: '正文内容',
+    user: { nickname: '作者' },
+    imageList: [{ urlDefault: 'http://sns-webpic-qc.xhscdn.com/a.jpg' }],
+  });
+
+  const content = await withFetchMock(
+    (url) => {
+      if (url === 'http://xhslink.cn/o/b1c2d3') {
+        return fakeResponse(loginHtml, {
+          url: `https://www.xiaohongshu.com/login?redirectPath=${encodeURIComponent(noteUrl)}`,
+        });
+      }
+      if (url === noteUrl) return fakeResponse(noteHtml, { url: noteUrl });
+      return null;
+    },
+    async (calls) => {
+      const result = await extractXhs('http://xhslink.cn/o/b1c2d3', '分享文案');
+      // Every XHS request must advertise `identity`.
+      for (const call of calls) {
+        assert.equal(call.headers['Accept-Encoding'], 'gzip;q=0, deflate;q=0, identity');
+      }
+      return result;
+    },
+  );
+
+  assert.equal(content.partial, false);
+  assert.equal(content.url, noteUrl);
+  assert.equal(content.title, '绕过风控的笔记');
+  assert.deepEqual(content.image_urls, ['https://sns-webpic-qc.xhscdn.com/a.jpg']);
+});
+
+test('extractXhs degrades (never stores /login) when the login wall persists', async () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc';
+  const loginUrl = `https://www.xiaohongshu.com/login?redirectPath=${encodeURIComponent(noteUrl)}`;
+  const loginHtml = `<html><head><meta property="og:title" content="小红书"></head><body>登录</body></html>`;
+
+  const content = await withFetchMock(
+    () => fakeResponse(loginHtml, { url: loginUrl }),
+    async () => extractXhs(loginUrl, '分享文案'),
+  );
+
+  assert.equal(content.partial, true);
+  assert.equal(content.error_message, XHS_LOGIN_BLOCK_MESSAGE);
+  assert.equal(content.url, noteUrl);
+  assert.doesNotMatch(content.url, /\/login/);
+});
+
 // ---------------------------------------------------------------------------
 // media helpers
 // ---------------------------------------------------------------------------
@@ -456,6 +819,39 @@ test('dedupeImageUrls keeps order and rejects invalid schemes', () => {
     ['https://a.example/1.jpg', 'http://b.example/2.png'],
   );
   assert.deepEqual(dedupeImageUrls(null), []);
+});
+
+test('resolveMediaFileUri renders locally downloaded images', () => {
+  const docDirectory = 'file:///data/user/0/app.jiancang/files/';
+  assert.equal(
+    resolveMediaFileUri('clips/abc123/deadbeef.jpg', docDirectory),
+    'file:///data/user/0/app.jiancang/files/media/clips/abc123/deadbeef.jpg',
+  );
+  assert.equal(
+    resolveMediaFileUri('clips/abc123/deadbeef.jpg', 'file:///data/user/0/app.jiancang/files'),
+    'file:///data/user/0/app.jiancang/files/media/clips/abc123/deadbeef.jpg',
+  );
+  // Already absolute URIs are passed through untouched.
+  assert.equal(
+    resolveMediaFileUri('file:///data/user/0/app.jiancang/files/media/a.jpg', docDirectory),
+    'file:///data/user/0/app.jiancang/files/media/a.jpg',
+  );
+  assert.equal(
+    resolveMediaFileUri('content://media/external/images/1', docDirectory),
+    'content://media/external/images/1',
+  );
+  // Escapes and missing document directory never produce a broken URI.
+  assert.equal(resolveMediaFileUri('../escape.jpg', docDirectory), null);
+  assert.equal(resolveMediaFileUri('clips/../../escape.jpg', docDirectory), null);
+  assert.equal(resolveMediaFileUri('clips/abc/hash.jpg', null), null);
+  assert.equal(resolveMediaFileUri('', docDirectory), null);
+  assert.equal(resolveMediaFileUri(null, docDirectory), null);
+});
+
+test('media downloads use the same desktop UA as the extractors', () => {
+  assert.equal(DEFAULT_USER_AGENT, EXTRACTOR_USER_AGENT);
+  assert.match(DEFAULT_USER_AGENT, /Mozilla\/5\.0 \(Windows/);
+  assert.match(DEFAULT_USER_AGENT, /Chrome\/\d+/);
 });
 
 test('extensionForMime normalizes aliases and falls back to .img', () => {
@@ -592,4 +988,110 @@ test('isLocalAiConfigured mirrors the backend ai_enabled rule', () => {
   assert.equal(isLocalAiConfigured({ baseUrl: 'https://llm.local/v1', apiKey: 'k', model: 'm' }), true);
   assert.equal(isLocalAiConfigured({ baseUrl: '  ', apiKey: 'k', model: 'm' }), false);
   assert.equal(isLocalAiConfigured({ baseUrl: 'https://llm.local/v1', apiKey: '', model: 'm' }), false);
+});
+
+// ---------------------------------------------------------------------------
+// extractContent: second routing pass after a redirect
+// ---------------------------------------------------------------------------
+
+test('extractContent re-routes a generic short link that lands on Xiaohongshu', async () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN';
+  const noteHtml = xhsStateHtml({
+    title: '重定向后的笔记',
+    desc: '第一段\n\n第二段',
+    user: { nickname: '作者' },
+    imageList: [{ urlDefault: 'http://sns-webpic-qc.xhscdn.com/a.jpg' }],
+    time: 1700000000,
+  });
+
+  const content = await withFetchMock(
+    (url) => {
+      if (url === 'https://sourl.cn/xhs') {
+        // The short link itself only redirects; the HTML has no article.
+        return fakeResponse('<html><body>跳转中</body></html>', { url: noteUrl });
+      }
+      if (url === noteUrl) return fakeResponse(noteHtml, { url: noteUrl });
+      return null;
+    },
+    async (calls) => {
+      const result = await extractContent('https://sourl.cn/xhs', '分享笔记');
+      assert.equal(calls.length, 2);
+      // The second pass must go through the XHS-specific transport headers.
+      assert.equal(calls[1].headers['Accept-Encoding'], 'gzip;q=0, deflate;q=0, identity');
+      return result;
+    },
+  );
+
+  assert.equal(content.platform, 'xiaohongshu');
+  assert.equal(content.url, noteUrl);
+  assert.equal(content.title, '重定向后的笔记');
+  assert.equal(content.content_text, '第一段\n\n第二段');
+  assert.deepEqual(content.image_urls, ['https://sns-webpic-qc.xhscdn.com/a.jpg']);
+  assert.equal(content.partial, false);
+});
+
+test('extractContent re-routes a generic short link that lands on WeChat', async () => {
+  const articleUrl = 'https://mp.weixin.qq.com/s/redirected-article';
+  const articleHtml = `<html><head><meta property="og:title" content="OG 标题"></head><body>
+      <h1 id="activity-name">公众号标题</h1>
+      <div id="js_content"><p>正文内容</p></div>
+    </body></html>`;
+
+  const content = await withFetchMock(
+    (url) => {
+      if (url === 'https://sourl.cn/wx') {
+        return fakeResponse(articleHtml, { url: articleUrl });
+      }
+      return null;
+    },
+    async () => extractContent('https://sourl.cn/wx', '公众号分享文案'),
+  );
+
+  // The already-fetched HTML is parsed, no second request.
+  assert.equal(content.platform, 'wechat');
+  assert.equal(content.url, articleUrl);
+  assert.equal(content.title, '公众号标题');
+  assert.equal(content.content_text, '正文内容');
+  assert.equal(content.partial, false);
+});
+
+test('extractContent re-routes a generic short link that lands on X', async () => {
+  const statusUrl = 'https://x.com/foo/status/123';
+
+  const content = await withFetchMock(
+    (url) => {
+      if (url === 'https://sourl.cn/tw') return fakeResponse('<html></html>', { url: statusUrl });
+      if (url === 'https://api.fxtwitter.com/foo/status/123') {
+        return fakeResponse(
+          JSON.stringify({ code: 200, tweet: { text: '推文正文', url: statusUrl } }),
+          { contentType: 'application/json' },
+        );
+      }
+      return null;
+    },
+    async () => extractContent('https://sourl.cn/tw', '推文分享'),
+  );
+
+  assert.equal(content.platform, 'x');
+  assert.equal(content.url, statusUrl);
+  assert.equal(content.content_text, '推文正文');
+  assert.equal(content.partial, false);
+});
+
+test('extractGeneric parses against the post-redirect URL', async () => {
+  const finalUrl = 'https://cdn.example.net/posts/1';
+  const html =
+    '<html><head><title>重定向页面</title></head><body><article>'
+    + '<p>正文段落</p><img data-src="/img/rel.jpg">'
+    + '</article></body></html>';
+
+  const content = await withFetchMock(
+    () => fakeResponse(html, { url: finalUrl }),
+    async () => extractGeneric('https://short.example/abc'),
+  );
+
+  assert.equal(content.url, finalUrl);
+  assert.equal(content.referer, 'https://cdn.example.net');
+  assert.deepEqual(content.image_urls, ['https://cdn.example.net/img/rel.jpg']);
+  assert.equal(content.partial, false);
 });
