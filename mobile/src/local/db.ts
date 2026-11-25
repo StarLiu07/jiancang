@@ -20,6 +20,8 @@ import type { SQLiteBindValue, SQLiteDatabase } from 'expo-sqlite';
 
 import type {
   AIStatus,
+  ChatMessageItem,
+  ChatRole,
   ClipDetail,
   ClipListQuery,
   ClipListResponse,
@@ -131,6 +133,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_review_logs_dedupe
     ON review_logs(clip_id, action, reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_review_logs_time ON review_logs(reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_review_logs_pending ON review_logs(sync_uploaded);
+
+CREATE TABLE IF NOT EXISTS clip_chat_messages (
+    id TEXT PRIMARY KEY,
+    clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_clip_chat_clip_time
+    ON clip_chat_messages(clip_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS sync_state (
     key TEXT PRIMARY KEY,
@@ -299,6 +312,14 @@ interface ReviewLogRow {
   action: string;
   reviewed_at: string;
   sync_uploaded: number;
+}
+
+interface ChatMessageRow {
+  id: string;
+  clip_id: string;
+  role: string;
+  content: string;
+  created_at: string;
 }
 
 const CLIP_COLUMNS: readonly (keyof ClipRow)[] = [
@@ -558,6 +579,15 @@ function asSyncFlag(value: unknown, fallback: number): number {
   if (value === undefined || value === null) return fallback;
   if (typeof value === 'boolean') return value ? 1 : 0;
   return asNumber(value, fallback) ? 1 : 0;
+}
+
+function asChatRole(value: unknown): ChatRole | null {
+  return value === 'user' || value === 'assistant' ? value : null;
+}
+
+function normalizeChatLimit(limit: unknown): number {
+  const numeric = asNumber(limit, 100);
+  return Math.max(1, numeric);
 }
 
 function normalizeLimit(limit: unknown, fallback = 20): number {
@@ -1118,6 +1148,7 @@ export async function deleteClip(clipId: string, permanent = false): Promise<boo
     }
   }
   await database.runAsync('DELETE FROM review_logs WHERE clip_id = ?', [clipId]);
+  await database.runAsync('DELETE FROM clip_chat_messages WHERE clip_id = ?', [clipId]);
   await database.runAsync('DELETE FROM clip_tags WHERE clip_id = ?', [clipId]);
   await database.runAsync('DELETE FROM media WHERE clip_id = ?', [clipId]);
   const result = await database.runAsync('DELETE FROM clips WHERE id = ?', [clipId]);
@@ -1595,6 +1626,97 @@ export async function insertRemoteReviewLogs(
       // The clip may not be present locally yet; the next pull will retry.
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// clip chat messages (local-first twin of the backend chat table)
+// ---------------------------------------------------------------------------
+
+function rowToChatMessage(row: ChatMessageRow): ChatMessageItem | null {
+  const role = asChatRole(row.role);
+  if (!role) return null;
+  return {
+    id: asString(row.id),
+    clip_id: asString(row.clip_id),
+    role,
+    content: asString(row.content),
+    created_at: asString(row.created_at),
+  };
+}
+
+/**
+ * The most recent `limit` messages, returned in ascending time order.
+ *
+ * Wrapping the `DESC` query keeps a long history from dropping the newest
+ * turns (the ones the next LLM call needs).
+ */
+export async function listChatMessages(
+  clipId: string,
+  limit = 100,
+): Promise<ChatMessageItem[]> {
+  const database = await getLocalDb();
+  const rows = await database.getAllAsync<ChatMessageRow>(
+    'SELECT * FROM ('
+      + 'SELECT * FROM clip_chat_messages WHERE clip_id = ? '
+      + 'ORDER BY created_at DESC, id DESC LIMIT ?'
+      + ') ORDER BY created_at ASC, id ASC',
+    [asString(clipId), normalizeChatLimit(limit)],
+  );
+  const items: ChatMessageItem[] = [];
+  for (const row of rows) {
+    const item = rowToChatMessage(row);
+    if (item) items.push(item);
+  }
+  return items;
+}
+
+/** Append one chat message and return the persisted row. */
+export async function addChatMessage(
+  clipId: string,
+  role: ChatRole,
+  content: string,
+  options: { id?: string; createdAt?: string } = {},
+): Promise<ChatMessageItem> {
+  const normalizedRole = asChatRole(role);
+  if (!normalizedRole) throw new Error(`Unknown chat role: ${String(role)}`);
+
+  const database = await getLocalDb();
+  const id = asString(options.id) || generateId();
+  const createdAt = canonicalOr(options.createdAt, nowIso());
+  const text = asString(content);
+
+  await database.runAsync(
+    'INSERT INTO clip_chat_messages (id, clip_id, role, content, created_at) '
+      + 'VALUES (?, ?, ?, ?, ?)',
+    [id, asString(clipId), normalizedRole, text, createdAt],
+  );
+
+  return {
+    id,
+    clip_id: asString(clipId),
+    role: normalizedRole,
+    content: text,
+    created_at: createdAt,
+  };
+}
+
+/** Delete every message of one clip, returning the number of removed rows. */
+export async function clearChatMessages(clipId: string): Promise<number> {
+  const database = await getLocalDb();
+  const result = await database.runAsync(
+    'DELETE FROM clip_chat_messages WHERE clip_id = ?',
+    [asString(clipId)],
+  );
+  return asNumber(result.changes);
+}
+
+export async function countChatMessages(clipId: string): Promise<number> {
+  const database = await getLocalDb();
+  return scalarNumber(
+    database,
+    'SELECT COUNT(*) AS value FROM clip_chat_messages WHERE clip_id = ?',
+    [asString(clipId)],
+  );
 }
 
 // ---------------------------------------------------------------------------

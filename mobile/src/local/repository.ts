@@ -13,6 +13,7 @@
  */
 
 import type {
+  ChatMessageItem,
   ClipCreateInput,
   ClipCreateResponse,
   ClipDetail,
@@ -28,6 +29,7 @@ import type {
   ReviewTodayResponse,
   TagListResponse,
 } from '../types';
+import type { SendClipChatOptions, SendClipChatResult } from './chat';
 import type { ClipUpdateFields } from './db';
 import { markdownToText } from './extractors/base';
 import {
@@ -176,9 +178,11 @@ export function localMediaPathsToDelete(
 
 type DbModule = typeof import('./db');
 type ReviewModule = typeof import('./review');
+type ChatModule = typeof import('./chat');
 
 let cachedDb: DbModule | null = null;
 let cachedReview: ReviewModule | null = null;
+let cachedChat: ChatModule | null = null;
 
 function localDb(): DbModule {
   if (!cachedDb) cachedDb = require('./db') as DbModule;
@@ -188,6 +192,11 @@ function localDb(): DbModule {
 function localReview(): ReviewModule {
   if (!cachedReview) cachedReview = require('./review') as ReviewModule;
   return cachedReview;
+}
+
+function localChat(): ChatModule {
+  if (!cachedChat) cachedChat = require('./chat') as ChatModule;
+  return cachedChat;
 }
 
 function triggerIngest(clipId: string, aiConfig: LocalAiConfig): void {
@@ -339,6 +348,31 @@ export const localRepo = {
 
   countPendingSync(): Promise<number> {
     return localDb().countPendingSync();
+  },
+
+  /** Persisted chat turns for one clip, oldest first. */
+  listChatMessages(clipId: string, limit = 100): Promise<ChatMessageItem[]> {
+    return localDb().listChatMessages(normalizeClipId(clipId), limit);
+  },
+
+  countChatMessages(clipId: string): Promise<number> {
+    return localDb().countChatMessages(normalizeClipId(clipId));
+  },
+
+  /** Drop every chat turn of one clip and notify subscribers. */
+  async clearChatMessages(clipId: string): Promise<number> {
+    const deleted = await localDb().clearChatMessages(normalizeClipId(clipId));
+    notifyLocalChange();
+    return deleted;
+  },
+
+  /** Run one article chat turn (local LLM or NUC fallback) and persist it. */
+  sendChatMessage(
+    clip: ClipDetail,
+    message: string,
+    options: SendClipChatOptions,
+  ): Promise<SendClipChatResult> {
+    return localChat().sendClipChatMessage(clip, message, options);
   },
 };
 
