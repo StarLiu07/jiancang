@@ -7,12 +7,19 @@
  * - models love markdown fences, so JSON is extracted defensively.
  */
 
-import type { LocalAiConfig } from '../types';
+import type { ArticleChatContext, ChatTurnInput, LocalAiConfig } from '../types';
 
 const MAX_CONTENT_CHARS = 6000;
 const DEFAULT_MODEL = 'deepseek/deepseek-v4.1-flash';
 const DEFAULT_USER_AGENT = 'jiancang/0.1';
 const DEFAULT_TIMEOUT_MS = 45_000;
+
+/** Article body budget for one chat turn (mirrors the backend). */
+export const MAX_CHAT_CONTENT_CHARS = 12000;
+/** How many past turns are replayed as context (mirrors the backend). */
+export const MAX_CHAT_HISTORY_MESSAGES = 20;
+/** Chat turns run a full LLM round-trip, so they get a wider budget. */
+export const CHAT_TIMEOUT_MS = 60_000;
 
 const SYSTEM_PROMPT =
   '你是一名中文「内容整理助手」，负责把剪藏的网页/公众号/推文正文压缩成可复习的卡片。\n' +
@@ -30,11 +37,33 @@ const SYSTEM_PROMPT =
 const JSON_OBJECT_RE = /\{[\s\S]*\}/;
 const CODE_FENCE_RE = /^```(?:json|JSON)?\s*|\s*```$/g;
 
+/**
+ * System prompt for article chat (1:1 with the backend `_CHAT_SYSTEM_PROMPT`).
+ *
+ * The assistant must stay grounded in the clipped article and clearly separate
+ * what the article says from background knowledge / inference.
+ */
+const CHAT_SYSTEM_PROMPT =
+  '你是一名「文章精读与讨论助手」，帮助用户深入理解并讨论他剪藏的文章。\n' +
+  '回答原则：\n' +
+  '1. 优先严格基于下面提供的文章标题、摘要、要点、正文和个人笔记作答，引用原文细节时不要改写事实。\n' +
+  '2. 明确区分「文章中提到的信息」与「补充背景/推论」：凡是正文没有出现的内容，绝不声称是原文所述，需要时明确标注为补充或推测。\n' +
+  '3. 正文不足时直接说明，并结合标题/摘要/笔记给出谨慎回答，不要编造细节。\n' +
+  '4. 回答简洁、有条理，必要时用短列表；默认使用中文，若用户用其他语言提问则跟随用户语言。';
+
 /** Raised when the LLM call or its JSON payload cannot be used. */
 export class AIEnrichmentError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AIEnrichmentError';
+  }
+}
+
+/** Raised when an article chat turn cannot produce a usable reply. */
+export class AIChatError extends AIEnrichmentError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AIChatError';
   }
 }
 
@@ -45,12 +74,52 @@ export interface LocalAiEnrichment {
 }
 
 export interface ChatMessage {
-  role: 'system' | 'user';
+  role: 'system' | 'user' | 'assistant';
   content: string;
+}
+
+export interface LocalChatResult {
+  reply: string;
+  model: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function textOr(value: unknown, fallback: string): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text || fallback;
+}
+
+/** Format the article snapshot embedded in the chat `system` message. */
+function articleChatContext(article: ArticleChatContext): string {
+  const points = Array.isArray(article.key_points)
+    ? article.key_points.map((point) => String(point).trim()).filter(Boolean)
+    : [];
+
+  let body = String(article.content_text ?? '').trim();
+  // Python (backend) slices by code points; `Array.from` keeps that 1:1 and
+  // avoids splitting surrogate pairs (emoji) at the truncation boundary.
+  const bodyChars = Array.from(body);
+  if (bodyChars.length > MAX_CHAT_CONTENT_CHARS) {
+    body = `${bodyChars.slice(0, MAX_CHAT_CONTENT_CHARS).join('')}\n...(正文已截断)`;
+  }
+
+  const lines = [
+    '以下是用户正在精读的文章资料：',
+    `标题：${textOr(article.title, '（无标题）')}`,
+    `作者：${textOr(article.author, '（未知）')}`,
+    `来源平台：${String(article.platform ?? '')}`,
+    `原文链接：${textOr(article.url, '（无）')}`,
+    `摘要：${textOr(article.summary, '（无）')}`,
+    '要点：',
+    ...(points.length ? points.map((point) => `- ${point}`) : ['- （无）']),
+    `个人笔记：${textOr(article.user_note, '（无）')}`,
+    '正文：',
+    body || '（正文暂缺，请结合标题/摘要/笔记回答并向用户说明正文不足）',
+  ];
+  return lines.join('\n');
 }
 
 /** Mirrors backend `settings.ai_enabled`: base URL + API key present. */
@@ -75,6 +144,32 @@ export function buildMessages(title: string, contentText: string, existingTags: 
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: userPrompt },
   ];
+}
+
+/**
+ * Build the OpenAI-style message list for one article chat turn.
+ *
+ * Blank history turns are dropped and only the most recent
+ * `MAX_CHAT_HISTORY_MESSAGES` turns are kept, mirroring the backend.
+ */
+export function buildArticleChatMessages(
+  article: ArticleChatContext,
+  history: readonly ChatTurnInput[],
+): ChatMessage[] {
+  const system: ChatMessage = {
+    role: 'system',
+    content: `${CHAT_SYSTEM_PROMPT}\n\n${articleChatContext(article)}`,
+  };
+
+  const turns: ChatMessage[] = [];
+  for (const turn of history ?? []) {
+    if (!turn) continue;
+    const content = typeof turn.content === 'string' ? turn.content.trim() : '';
+    if (!content) continue;
+    turns.push({ role: turn.role === 'assistant' ? 'assistant' : 'user', content });
+  }
+
+  return [system, ...turns.slice(-MAX_CHAT_HISTORY_MESSAGES)];
 }
 
 export function stripCodeFence(text: string): string {
@@ -253,4 +348,98 @@ export async function enrichClipLocally(
   }
 }
 
-export { SYSTEM_PROMPT, MAX_CONTENT_CHARS };
+/**
+ * Ask the LLM a question about one article (multi-turn, stateless).
+ *
+ * Throws `AIChatError` when the local AI is not configured, the history has no
+ * user turn, or the call / reply is unusable.
+ */
+export async function chatWithArticleLocally(
+  article: ArticleChatContext,
+  history: readonly ChatTurnInput[],
+  config: LocalAiConfig,
+  signal?: AbortSignal,
+): Promise<LocalChatResult> {
+  if (!isLocalAiConfigured(config)) {
+    throw new AIChatError('本机未配置 AI 接口');
+  }
+
+  const messages = buildArticleChatMessages(article, history);
+  if (!messages.some((message) => message.role === 'user')) {
+    throw new AIChatError('请输入要提问的内容');
+  }
+
+  const baseUrl = config.baseUrl.trim().replace(/\/+$/, '');
+  const endpoint = `${baseUrl}/chat/completions`;
+  const requestModel = config.model.trim() || DEFAULT_MODEL;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    Authorization: `Bearer ${config.apiKey.trim()}`,
+    'User-Agent': DEFAULT_USER_AGENT,
+  };
+  const payload = {
+    model: requestModel,
+    messages,
+    temperature: 0.5,
+    stream: false,
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+  const onExternalAbort = () => controller.abort();
+  const externalSignal = signal;
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else if (typeof externalSignal.addEventListener === 'function') {
+      externalSignal.addEventListener('abort', onExternalAbort);
+    }
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    if (response.status >= 400) {
+      const text = await response.text().catch(() => '');
+      throw new AIChatError(`llm http ${response.status}: ${text.slice(0, 200)}`);
+    }
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch {
+      throw new AIChatError('llm returned non-JSON body');
+    }
+    if (!isRecord(data)) {
+      throw new AIChatError('llm returned unexpected payload');
+    }
+
+    const reply = messageContent(data).trim();
+    if (!reply) {
+      throw new AIChatError('empty model reply');
+    }
+    const responseModel = typeof data.model === 'string' ? data.model.trim() : '';
+    return { reply, model: responseModel || requestModel };
+  } catch (error) {
+    if (error instanceof AIChatError) throw error;
+    if (error instanceof AIEnrichmentError) throw new AIChatError(error.message);
+    const name = error instanceof Error ? error.name : '';
+    const detail = error instanceof Error ? error.message : String(error);
+    const prefix = name === 'AbortError' || name === 'TypeError'
+      ? 'llm request failed'
+      : 'llm chat failed';
+    throw new AIChatError(`${prefix}: ${detail || name}`);
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal && typeof externalSignal.removeEventListener === 'function') {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
+export { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT, MAX_CONTENT_CHARS };
