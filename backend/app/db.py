@@ -30,6 +30,8 @@ from typing import Any
 
 from app.models import (
     AIStatus,
+    ChatMessageItem,
+    ChatRole,
     ClipDetail,
     ClipStatus,
     ClipSummary,
@@ -170,6 +172,17 @@ CREATE TABLE IF NOT EXISTS review_logs (
 
 CREATE INDEX IF NOT EXISTS idx_review_logs_time ON review_logs(reviewed_at);
 
+CREATE TABLE IF NOT EXISTS clip_chat_messages (
+    id TEXT PRIMARY KEY,
+    clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_clip_chat_clip_time
+    ON clip_chat_messages(clip_id, created_at, id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS clips_fts USING fts5(
     clip_id UNINDEXED,
     title,
@@ -263,6 +276,13 @@ def _review_state(value: Any) -> ReviewState:
         return ReviewState.ACTIVE
 
 
+def _chat_role(value: Any) -> ChatRole:
+    try:
+        return ChatRole(str(value))
+    except (ValueError, TypeError):
+        return ChatRole.USER
+
+
 def _json_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item).strip()]
@@ -290,6 +310,16 @@ def row_to_media_item(row: sqlite3.Row | dict[str, Any]) -> MediaItem:
         mime_type=str(row["mime_type"] or ""),
         size_bytes=int(row["size_bytes"] or 0),
         sort_order=int(row["sort_order"] or 0),
+    )
+
+
+def row_to_chat_message(row: sqlite3.Row | dict[str, Any]) -> ChatMessageItem:
+    return ChatMessageItem(
+        id=str(row["id"]),
+        clip_id=str(row["clip_id"]),
+        role=_chat_role(row["role"]),
+        content=str(row["content"] or ""),
+        created_at=str(row["created_at"] or ""),
     )
 
 
@@ -418,6 +448,20 @@ class Database:
             )
             self._conn.execute(
                 "INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('seq', 1)"
+            )
+            # Chat history arrived after the first release: recreate it for
+            # databases that were initialised before this table existed.
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS clip_chat_messages ("
+                "id TEXT PRIMARY KEY, "
+                "clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE, "
+                "role TEXT NOT NULL, "
+                "content TEXT NOT NULL, "
+                "created_at TEXT NOT NULL)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_clip_chat_clip_time "
+                "ON clip_chat_messages(clip_id, created_at, id)"
             )
             self._conn.commit()
 
@@ -929,6 +973,61 @@ class Database:
         self._write(
             "INSERT INTO review_logs (clip_id, action, reviewed_at) VALUES (?, ?, ?)",
             (clip_id, str(action), reviewed_at or to_iso()),
+        )
+
+    # -- article chat -----------------------------------------------------
+    def list_chat_messages(
+        self, clip_id: str, limit: int = 100
+    ) -> list[sqlite3.Row]:
+        """Newest ``limit`` messages for a clip, returned oldest-first."""
+        size = max(1, int(limit or 100))
+        rows = self._fetchall(
+            "SELECT * FROM clip_chat_messages WHERE clip_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (clip_id, size),
+        )
+        rows.reverse()
+        return rows
+
+    def add_chat_message(
+        self,
+        clip_id: str,
+        role: str | ChatRole,
+        content: str,
+        *,
+        message_id: str | None = None,
+        now: datetime | None = None,
+    ) -> sqlite3.Row:
+        new_id = message_id or uuid.uuid4().hex
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO clip_chat_messages "
+                "(id, clip_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                (new_id, clip_id, str(role), content or "", to_iso(now)),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM clip_chat_messages WHERE id = ?", (new_id,)
+            ).fetchone()
+        if row is None:  # pragma: no cover - only if the insert vanished
+            raise KeyError(new_id)
+        return row
+
+    def clear_chat_messages(self, clip_id: str) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM clip_chat_messages WHERE clip_id = ?", (clip_id,)
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def count_chat_messages(self, clip_id: str) -> int:
+        return int(
+            self._scalar(
+                "SELECT COUNT(*) FROM clip_chat_messages WHERE clip_id = ?",
+                (clip_id,),
+            )
+            or 0
         )
 
     # -- media ------------------------------------------------------------

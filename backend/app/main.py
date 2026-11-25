@@ -67,6 +67,7 @@ def create_app(settings: Settings | None = None, *, eager_db: bool = True) -> Fa
 
     app.include_router(clips.router)
     app.include_router(clips.media_router)
+    app.include_router(clips.ai_router)
     app.include_router(review.router)
     app.include_router(sync.router)
     app.include_router(tags.router)

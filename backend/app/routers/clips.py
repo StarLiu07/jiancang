@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -13,10 +15,18 @@ from fastapi.responses import FileResponse
 from app.config import Settings
 from app.db import (
     Database,
+    row_to_chat_message,
     row_to_detail,
     row_to_summary,
+    utcnow,
 )
 from app.models import (
+    ArticleChatContext,
+    ChatRole,
+    ChatTurnInput,
+    ClipChatHistoryResponse,
+    ClipChatRequest,
+    ClipChatResponse,
     ClipCreateRequest,
     ClipCreateResponse,
     ClipDetail,
@@ -24,9 +34,17 @@ from app.models import (
     ClipStatus,
     ClipSummary,
     ClipUpdateRequest,
+    Platform,
     ReviewState,
+    StatelessChatRequest,
+    StatelessChatResponse,
 )
 from app.routers import get_db, get_settings
+from app.services.ai import (
+    MAX_CHAT_HISTORY_MESSAGES,
+    AIChatError,
+    chat_with_article,
+)
 from app.services.ingest import markdown_to_text, process_clip
 
 logger = logging.getLogger(__name__)
@@ -36,6 +54,11 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 router = APIRouter(prefix="/api/clips", tags=["clips"])
 media_router = APIRouter(prefix="/api/media", tags=["media"])
+ai_router = APIRouter(prefix="/api/ai", tags=["ai"])
+
+AI_DISABLED_DETAIL = (
+    "后端未配置 AI 模型，请先在服务端 .env 中配置 LLM_BASE_URL 与 LLM_API_KEY"
+)
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
@@ -112,6 +135,49 @@ def _get_clip_or_404(db: Database, clip_id: str) -> Any:
     if row is None:
         raise HTTPException(status_code=404, detail="Clip not found")
     return row
+
+
+def _chat_context(row: Any) -> ArticleChatContext:
+    """Build the article context for a chat turn from a clip row."""
+    try:
+        platform = Platform(str(row["platform"]))
+    except (ValueError, TypeError):
+        platform = Platform.WEB
+    try:
+        parsed = json.loads(str(row["key_points_json"] or "[]"))
+    except (TypeError, ValueError):
+        parsed = []
+    key_points = (
+        [str(item) for item in parsed if str(item).strip()]
+        if isinstance(parsed, list)
+        else []
+    )
+    markdown = str(row["content_markdown"] or "").strip()
+    return ArticleChatContext(
+        title=str(row["title"] or ""),
+        author=str(row["author"] or ""),
+        platform=platform,
+        url=str(row["url"] or ""),
+        summary=str(row["summary"] or ""),
+        key_points=key_points,
+        content_text=markdown or str(row["content_text"] or ""),
+        user_note=str(row["user_note"] or ""),
+    )
+
+
+def _history_turns(db: Database, clip_id: str) -> list[ChatTurnInput]:
+    turns: list[ChatTurnInput] = []
+    rows = db.list_chat_messages(clip_id, limit=MAX_CHAT_HISTORY_MESSAGES)
+    for row in rows:
+        content = str(row["content"] or "").strip()
+        if not content:
+            continue
+        try:
+            role = ChatRole(str(row["role"]))
+        except ValueError:
+            continue
+        turns.append(ChatTurnInput(role=role, content=content))
+    return turns
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +351,87 @@ def retry_clip(
     return _detail(db, updated)
 
 
+@router.get("/{clip_id}/chat", response_model=ClipChatHistoryResponse)
+def get_chat_history(clip_id: str, db: DbDep) -> ClipChatHistoryResponse:
+    _get_clip_or_404(db, clip_id)
+    rows = db.list_chat_messages(clip_id)
+    return ClipChatHistoryResponse(
+        clip_id=clip_id,
+        messages=[row_to_chat_message(row) for row in rows],
+    )
+
+
+@router.post("/{clip_id}/chat", response_model=ClipChatResponse)
+async def chat_with_clip(
+    clip_id: str,
+    payload: ClipChatRequest,
+    db: DbDep,
+    settings: SettingsDep,
+) -> ClipChatResponse:
+    row = _get_clip_or_404(db, clip_id)
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Message must not be empty")
+    if not settings.ai_enabled:
+        raise HTTPException(status_code=503, detail=AI_DISABLED_DETAIL)
+
+    article = _chat_context(row)
+    turns = [
+        *_history_turns(db, clip_id),
+        ChatTurnInput(role=ChatRole.USER, content=message),
+    ]
+    try:
+        reply, model = await chat_with_article(article, turns, settings)
+    except AIChatError as exc:
+        # Never persist a failed turn: retrying would duplicate the question.
+        raise HTTPException(status_code=502, detail=f"AI 聊天请求失败：{exc}") from exc
+
+    user_time = utcnow()
+    user_row = db.add_chat_message(clip_id, ChatRole.USER, message, now=user_time)
+    assistant_row = db.add_chat_message(
+        clip_id,
+        ChatRole.ASSISTANT,
+        reply,
+        now=user_time + timedelta(microseconds=1),
+    )
+    return ClipChatResponse(
+        user_message=row_to_chat_message(user_row),
+        assistant_message=row_to_chat_message(assistant_row),
+        model=model,
+    )
+
+
+@router.delete("/{clip_id}/chat")
+def clear_chat_history(clip_id: str, db: DbDep) -> dict[str, Any]:
+    _get_clip_or_404(db, clip_id)
+    deleted = db.clear_chat_messages(clip_id)
+    return {"ok": True, "deleted": deleted}
+
+
+@ai_router.post("/chat", response_model=StatelessChatResponse)
+async def chat_stateless(
+    payload: StatelessChatRequest,
+    settings: SettingsDep,
+) -> StatelessChatResponse:
+    if not settings.ai_enabled:
+        raise HTTPException(status_code=503, detail=AI_DISABLED_DETAIL)
+    if not any(
+        turn.role is ChatRole.USER and turn.content.strip()
+        for turn in payload.messages
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="At least one non-empty user message is required",
+        )
+    try:
+        reply, model = await chat_with_article(
+            payload.article, payload.messages, settings
+        )
+    except AIChatError as exc:
+        raise HTTPException(status_code=502, detail=f"AI 聊天请求失败：{exc}") from exc
+    return StatelessChatResponse(reply=reply, model=model)
+
+
 @media_router.get("/{media_id}")
 def get_media(media_id: str, request: Request, db: DbDep, settings: SettingsDep) -> FileResponse:
     row = db.get_media(media_id)
@@ -305,4 +452,4 @@ def get_media(media_id: str, request: Request, db: DbDep, settings: SettingsDep)
     )
 
 
-__all__ = ["media_router", "resolve_media_path", "router"]
+__all__ = ["ai_router", "media_router", "resolve_media_path", "router"]
