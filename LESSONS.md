@@ -36,3 +36,14 @@
 - **固化方式**：[x] 代码结构（重定向二次路由 + `XHS_HEADERS` + `unwrapXhsRedirect` + `resolveMediaFileUri`）  [ ] Hook/脚本  [x] 回归测试（后端 +25 条 pytest，移动端 +20 条 node:test）  [ ] AGENTS.md
 - **红灯验证**：是（实测复现 `/login` 302、补测 `/login?redirectPath=...` 自定义 `og:title` 壳页红灯转绿灯，并实测真链 `http://xhslink.cn/o/AbuixShqJX6` 前后端均完整抓出标题/作者/5 段正文/12 张去重 HTTPS 图）
 - **落地位置**：`backend/app/services/url_utils.py`、`backend/app/services/extractors/{__init__,generic,xhs,wechat,x}.py`、`mobile/src/local/{urlUtils,media,db}.ts`、`mobile/src/local/extractors/{index,generic,xhs,wechat,x}.ts`、`mobile/src/utils/url.ts`
+
+### [CLOSED] 2026-11-25 小红书解析“开始能成功、后面被登录拦截”的四层根因
+- **现象**：同版本 APK（v0.6.0）刚装上时可正常抓取小红书，过一段时间后（尤其是 5G + VPN 场景或连续抓取后）开始报错 `触发小红书登录拦截，无法直接读取笔记`，且点击「重新抓取」无法恢复；实测同一条短链 `https://xhslink.cn/o/6yY8iOgqvC4` 在国内住宅 IP 下 7 小时后仍可完整抓出标题与 9 张图。
+- **根因**：
+  1. **出口 IP / VPN / 5G 共享 IP 触发小红书边缘 WAF 状态风控**：未登录游客抓取依赖小红书 SSR 豁免通道，海外/机房 VPN 或高频共享 5G IP 会直接被 OpenResty 302 到 `/login?redirectPath=...`，且原架构在手机本地被拦截时完全没有回退到家用 NUC（住宅 IP + 可选 MediaCrawler MCP）兜底。
+  2. **React Native `fetch` 默认 `withCredentials = true` 导致 Android `CookieManager` 持久化污染**：`fetchHtml` 未传 `credentials: 'omit'`，OkHttp `ForwardingCookieHandler` 会把 `acw_tc` 和 1 年期 `abRequestId` 写入 WebView 持久化 Cookie 并在后续请求及跨 Wi-Fi/5G/VPN 切换时持续回放。
+  3. **失败降级覆写原短链 + `http://` 降级与 `/404` 未解包**：`/login?redirectPath=http://...&exSource=null` 解包后未升回 `https://`、未清噪声参数、未处理 `/404?source=/404/sec_...?redirectPath=...`，且降级时用解包链接覆盖了 `clip.url` 里的 `xhslink.cn` 短链，导致重试无法回退原短链。
+  4. **同步推送无服务端补抓**：移动端离线被拦截后推送 `partial`/`failed` 剪藏到 NUC 时，服务端仅排队补 AI 摘要，未触发 `process_clip` 自动补抓正文与图片。
+- **固化方式**：[x] 代码结构（`credentials: 'omit'` 切换 `CookieJar.NO_COOKIES` + `unwrapXhsRedirect` 升级 HTTPS/解包 `/404`/清 `exSource=null` + 多策略与 `raw_input` 短链自愈 + `POST /api/extract` 实时 NUC 兜底 + `sync/push` 后台自动补抓）  [ ] Hook/脚本  [x] 回归测试（后端 195 条 pytest + ruff，移动端全量 node:test + tsc）  [ ] AGENTS.md
+- **红灯验证**：是（先写红灯单测覆盖 `credentials: 'omit'`、`/404` & `http://` & `exSource=null` 解包、受损 URL 从 `raw_input` 恢复短链、`POST /api/extract` 与同步补抓，并实测真链 `https://xhslink.cn/o/6yY8iOgqvC4` 正常抓取及受损 URL 重试自愈均返回完整标题与 9 张图）
+- **落地位置**：`backend/app/models.py`、`backend/app/services/extractors/xhs.py`、`backend/app/services/sync.py`、`backend/app/routers/{clips,sync}.py`、`backend/app/main.py`、`mobile/src/types.ts`、`mobile/src/api/client.ts`、`mobile/src/local/extractors/{generic,xhs}.ts`、`mobile/src/local/{ingest,repository}.ts`、`mobile/app/{clip/[id],(tabs)/index,(tabs)/library}.tsx`、`mobile/src/hooks/useShareCapture.ts`
