@@ -38,6 +38,8 @@ from app.models import (
     ReviewState,
     StatelessChatRequest,
     StatelessChatResponse,
+    StatelessExtractRequest,
+    StatelessExtractResponse,
 )
 from app.routers import get_db, get_settings
 from app.services.ai import (
@@ -45,6 +47,7 @@ from app.services.ai import (
     AIChatError,
     chat_with_article,
 )
+from app.services.extractors import ExtractedContent, extract_content
 from app.services.ingest import markdown_to_text, process_clip
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,7 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 router = APIRouter(prefix="/api/clips", tags=["clips"])
 media_router = APIRouter(prefix="/api/media", tags=["media"])
 ai_router = APIRouter(prefix="/api/ai", tags=["ai"])
+extract_router = APIRouter(prefix="/api", tags=["extract"])
 
 AI_DISABLED_DETAIL = (
     "后端未配置 AI 模型，请先在服务端 .env 中配置 LLM_BASE_URL 与 LLM_API_KEY"
@@ -432,6 +436,34 @@ async def chat_stateless(
     return StatelessChatResponse(reply=reply, model=model)
 
 
+@extract_router.post("/extract", response_model=StatelessExtractResponse)
+async def extract_stateless(
+    payload: StatelessExtractRequest,
+    settings: SettingsDep,
+) -> StatelessExtractResponse:
+    """Stateless remote extraction (the phone's risk-control fallback).
+
+    Nothing is persisted: the mobile client owns the clip and mirrors the returned
+    fields into its local database, exactly like its own local extractor would.
+    """
+    content: ExtractedContent = await extract_content(
+        payload.url, raw_input=payload.raw_input, settings=settings
+    )
+    return StatelessExtractResponse(
+        platform=content.platform,
+        url=content.url or payload.url,
+        title=content.title,
+        author=content.author,
+        published_at=content.published_at,
+        content_markdown=content.content_markdown,
+        content_text=content.content_text,
+        image_urls=[url for url in content.image_urls or [] if url],
+        partial=content.partial,
+        error_message=content.error_message,
+        referer=content.referer,
+    )
+
+
 @media_router.get("/{media_id}")
 def get_media(media_id: str, request: Request, db: DbDep, settings: SettingsDep) -> FileResponse:
     row = db.get_media(media_id)
@@ -452,4 +484,10 @@ def get_media(media_id: str, request: Request, db: DbDep, settings: SettingsDep)
     )
 
 
-__all__ = ["ai_router", "media_router", "resolve_media_path", "router"]
+__all__ = [
+    "ai_router",
+    "extract_router",
+    "media_router",
+    "resolve_media_path",
+    "router",
+]

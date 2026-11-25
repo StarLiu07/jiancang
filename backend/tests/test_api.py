@@ -321,6 +321,129 @@ def test_list_filters_and_pagination(client_for: ClientFor) -> None:
 
 
 # ---------------------------------------------------------------------------
+# stateless remote extraction (/api/extract)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_endpoint_mirrors_extractor_output(
+    client_for: ClientFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, _ = client_for()
+    captured: dict[str, object] = {}
+
+    async def fake_extract_content(
+        url: str, raw_input: str = "", settings: Settings | None = None
+    ) -> ExtractedContent:
+        captured.update({"url": url, "raw_input": raw_input, "settings": settings})
+        return ExtractedContent(
+            platform=Platform.XIAOHONGSHU,
+            url="https://www.xiaohongshu.com/explore/abc?xsec_token=TOK",
+            title="笔记标题",
+            author="小红薯作者",
+            published_at="2025-01-01T00:00:00+00:00",
+            content_markdown="# 笔记标题\n\n服务端抠到的正文",
+            content_text="服务端抠到的正文",
+            image_urls=["https://sns-img.xhscdn.com/a.jpg"],
+            partial=False,
+            referer="https://www.xiaohongshu.com/",
+        )
+
+    monkeypatch.setattr("app.routers.clips.extract_content", fake_extract_content)
+
+    response = client.post(
+        "/api/extract",
+        json={"url": "https://xhslink.com/a/b1c2d3", "raw_input": "分享文案"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["platform"] == "xiaohongshu"
+    assert body["url"] == "https://www.xiaohongshu.com/explore/abc?xsec_token=TOK"
+    assert body["title"] == "笔记标题"
+    assert body["author"] == "小红薯作者"
+    assert body["published_at"] == "2025-01-01T00:00:00+00:00"
+    assert body["content_markdown"].startswith("# 笔记标题")
+    assert body["content_text"] == "服务端抠到的正文"
+    assert body["image_urls"] == ["https://sns-img.xhscdn.com/a.jpg"]
+    assert body["partial"] is False
+    assert body["error_message"] is None
+    assert body["referer"] == "https://www.xiaohongshu.com/"
+    # the phone's own URL and caption are handed to the extractor untouched
+    assert captured["url"] == "https://xhslink.com/a/b1c2d3"
+    assert captured["raw_input"] == "分享文案"
+    assert captured["settings"] is not None
+    # stateless: nothing is persisted server-side
+    assert client.get("/api/clips").json()["total"] == 0
+
+
+def test_extract_endpoint_maps_degraded_partial(
+    client_for: ClientFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, _ = client_for()
+
+    async def fake_extract_content(
+        url: str, raw_input: str = "", settings: Settings | None = None
+    ) -> ExtractedContent:
+        return ExtractedContent(
+            platform=Platform.XIAOHONGSHU,
+            url="",  # degrade without a resolvable URL
+            title="分享文案",
+            content_markdown=raw_input,
+            content_text=raw_input,
+            partial=True,
+            error_message="小红书返回了登录/风控壳页",
+        )
+
+    monkeypatch.setattr("app.routers.clips.extract_content", fake_extract_content)
+
+    request_url = "https://www.xiaohongshu.com/explore/abc"
+    response = client.post(
+        "/api/extract", json={"url": request_url, "raw_input": "分享文案"}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["partial"] is True
+    assert body["error_message"] == "小红书返回了登录/风控壳页"
+    assert body["url"] == request_url  # falls back to the requested URL
+
+    # the schema rejects a request without any URL
+    assert client.post("/api/extract", json={"url": ""}).status_code == 422
+
+
+def test_extract_endpoint_is_protected_by_the_api_token(
+    client_for: ClientFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, _ = client_for(api_token="tok")
+
+    async def never_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError("no extraction without a valid token")
+
+    monkeypatch.setattr("app.routers.clips.extract_content", never_called)
+    payload = {"url": "https://xhslink.com/a/b1c2d3", "raw_input": "文案"}
+
+    assert client.post("/api/extract", json=payload).status_code == 401
+    assert (
+        client.post(
+            "/api/extract", json=payload, headers={"Authorization": "Bearer wrong"}
+        ).status_code
+        == 401
+    )
+
+    async def fake_extract_content(
+        url: str, raw_input: str = "", settings: Settings | None = None
+    ) -> ExtractedContent:
+        return ExtractedContent(platform=Platform.XIAOHONGSHU, url=url, title="登录可抓")
+
+    monkeypatch.setattr("app.routers.clips.extract_content", fake_extract_content)
+    allowed = client.post(
+        "/api/extract", json=payload, headers={"Authorization": "Bearer tok"}
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["title"] == "登录可抓"
+
+
+# ---------------------------------------------------------------------------
 # patch / delete / retry
 # ---------------------------------------------------------------------------
 

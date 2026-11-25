@@ -58,6 +58,8 @@ _AI_STATES_THAT_YIELD = frozenset(
 )
 _READY_STATES = frozenset({ClipStatus.READY.value, ClipStatus.PARTIAL.value})
 _PENDING_STATES = frozenset({ClipStatus.PENDING.value, ClipStatus.FAILED.value})
+#: Statuses where the phone could not scrape the body: the NUC must (re-)extract it.
+_NEEDS_EXTRACT_STATES = frozenset({ClipStatus.PARTIAL.value, ClipStatus.FAILED.value})
 
 EnumT = TypeVar("EnumT", bound=StrEnum)
 
@@ -121,6 +123,18 @@ def _is_strictly_older(incoming: str | None, server: str | None) -> bool:
     return incoming_dt < server_dt
 
 
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _is_placeholder_body(body: Any, raw_input: Any) -> bool:
+    """True when ``body`` is empty or simply the share caption the phone fell back to."""
+    text = _normalized_text(body)
+    if not text:
+        return True
+    return text == _normalized_text(raw_input)
+
+
 # ---------------------------------------------------------------------------
 # merging
 # ---------------------------------------------------------------------------
@@ -176,14 +190,19 @@ def merge_clip(
     incoming_status = str(payload.status)
     incoming_ai = str(payload.ai_status)
 
-    # -- body protection: never replace a scraped body with "nothing" --------
+    # -- body protection: never replace a scraped body with "nothing" or a caption ---
     server_markdown = str(existing["content_markdown"] or "")
-    if server_markdown.strip() and not str(payload.content_markdown or "").strip():
+    server_body_is_real = bool(server_markdown.strip()) and not _is_placeholder_body(
+        server_markdown, existing["raw_input"]
+    )
+    if server_body_is_real and _is_placeholder_body(
+        payload.content_markdown, payload.raw_input
+    ):
         fields["content_markdown"] = server_markdown
         fields["content_text"] = str(existing["content_text"] or "") or markdown_to_text(
             server_markdown
         )
-        if server_status == ClipStatus.READY.value and incoming_status in _PENDING_STATES:
+        if incoming_status in _PENDING_STATES or server_status == ClipStatus.READY.value:
             fields["status"] = server_status
             fields["error_message"] = existing["error_message"]
 
@@ -264,6 +283,23 @@ def _needs_ai(row: Any, settings: Settings) -> bool:
     )
 
 
+def _needs_extract(row: Any) -> bool:
+    """Should the NUC (re-)scrape this (merged) clip body itself?
+
+    Only clips whose body is still the share-caption placeholder qualify: a body the
+    user typed by hand (or one the server already scraped) is never re-fetched.
+    """
+    if str(row["review_state"]) == ReviewState.DELETED.value:
+        return False
+    if str(row["status"]) not in _NEEDS_EXTRACT_STATES:
+        return False
+    if not str(row["url"] or "").strip():
+        return False
+    return _is_placeholder_body(
+        row["content_markdown"], row["raw_input"]
+    ) and _is_placeholder_body(row["content_text"], row["raw_input"])
+
+
 # ---------------------------------------------------------------------------
 # media files
 # ---------------------------------------------------------------------------
@@ -335,7 +371,12 @@ def apply_push(
                 missing.append(media_id)
 
         merged = db.get_clip(payload.id)
-        if merged is not None and _needs_ai(merged, settings):
+        if merged is None:
+            continue
+        if _needs_extract(merged):
+            # The server re-scrapes first; AI enrichment happens after that extraction.
+            response.queued_extract_ids.append(payload.id)
+        elif _needs_ai(merged, settings):
             response.queued_ai_ids.append(payload.id)
 
     for log in request.review_logs:
