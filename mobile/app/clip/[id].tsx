@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -86,6 +86,7 @@ export default function ClipDetailScreen() {
   const [editorExpanded, setEditorExpanded] = useState(false);
   const [showContentEditor, setShowContentEditor] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [chatCount, setChatCount] = useState(0);
 
   // Filter unresolvable media once and keep the media-index -> preview-index map
   // so tapping the Nth gallery thumbnail opens the matching full-screen page.
@@ -104,8 +105,13 @@ export default function ClipDetailScreen() {
       else if (mode === 'initial') setLoading(true);
       if (mode !== 'silent') setError(null);
       try {
-        const detail = await localRepo.getClip(clipId);
+        // The chat count is decorative: never let it fail the detail load.
+        const [detail, chatTurns] = await Promise.all([
+          localRepo.getClip(clipId),
+          localRepo.countChatMessages(clipId).catch(() => 0),
+        ]);
         setClip(detail);
+        setChatCount(chatTurns);
         // Never overwrite a draft the user is actively editing.
         if (!dirtyRef.current || !loadedRef.current) {
           setForm(toForm(detail));
@@ -132,6 +138,25 @@ export default function ClipDetailScreen() {
   clipRef.current = clip;
   const loadRef = useRef(load);
   loadRef.current = load;
+
+  // Coming back from the chat screen: re-read the note (a reply may have been
+  // appended) and the conversation count without flashing a spinner. `load`
+  // already refuses to overwrite an unsaved draft.
+  const firstFocusRef = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (!clipId) return;
+      if (firstFocusRef.current) {
+        firstFocusRef.current = false;
+        return;
+      }
+      void loadRef.current('silent');
+      void localRepo
+        .countChatMessages(clipId)
+        .then((count) => setChatCount(count))
+        .catch(() => undefined);
+    }, [clipId]),
+  );
 
   // Re-read the detail while extraction / AI enrichment is still running, so
   // the body and digest appear without a manual pull-to-refresh.
@@ -304,7 +329,25 @@ export default function ClipDetailScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title, headerStyle: { backgroundColor: colors.sheet } }} />
+      <Stack.Screen
+        options={{
+          title,
+          headerStyle: { backgroundColor: colors.sheet },
+          headerRight: () => (
+            <SpringPressable
+              onPress={() => router.push({ pathname: '/chat/[id]', params: { id: clip.id } })}
+              scaleTo={0.94}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="问 AI"
+              contentStyle={styles.headerChatButton}
+            >
+              <Ionicons name="sparkles-outline" size={13} color={colors.accent} />
+              <Text style={styles.headerChatText}>问 AI</Text>
+            </SpringPressable>
+          ),
+        }}
+      />
       <ScrollView
         style={styles.screen}
         contentContainerStyle={styles.content}
@@ -427,6 +470,29 @@ export default function ClipDetailScreen() {
               </View>
             ) : null}
           </View>
+        </FadeSlideIn>
+
+        <FadeSlideIn delay={70} distance={10}>
+          <SpringPressable
+            onPress={() => router.push({ pathname: '/chat/[id]', params: { id: clip.id } })}
+            scaleTo={0.985}
+            accessibilityRole="button"
+            accessibilityLabel="与 AI 聊这篇文章"
+            contentStyle={styles.chatEntryCard}
+          >
+            <View style={styles.chatEntryIconWrap}>
+              <Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.accent} />
+            </View>
+            <View style={styles.chatEntryText}>
+              <Text style={styles.chatEntryTitle}>与 AI 聊这篇文章</Text>
+              <Text style={styles.chatEntrySubtitle} numberOfLines={2}>
+                {chatCount > 0
+                  ? `已有 ${chatCount} 条对话 · 继续追问`
+                  : '追问正文细节、提炼行动清单或生成笔记'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={15} color={colors.faint} />
+          </SpringPressable>
         </FadeSlideIn>
 
         {clip.media.length ? (
@@ -1134,6 +1200,55 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: 'center',
     paddingTop: spacing.xs,
+  },
+
+  headerChatButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.accentSoft,
+    borderRadius: radius.pill,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+  },
+  headerChatText: {
+    color: colors.accent,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chatEntryCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.bg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.accentBorder,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+  },
+  chatEntryIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.accentSoft,
+  },
+  chatEntryText: {
+    flex: 1,
+    gap: 3,
+  },
+  chatEntryTitle: {
+    fontFamily: fonts.serif,
+    color: colors.text,
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
+  chatEntrySubtitle: {
+    color: colors.muted,
+    fontSize: 11.5,
+    lineHeight: 17,
   },
   pressed: {
     opacity: 0.78,

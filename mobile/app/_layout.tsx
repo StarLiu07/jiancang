@@ -90,6 +90,7 @@ export default function RootLayout() {
                 >
                   <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                   <Stack.Screen name="clip/[id]" options={{ title: '剪藏详情', headerBackTitle: '返回' }} />
+                  <Stack.Screen name="chat/[id]" options={{ title: '文章问答', headerBackTitle: '返回' }} />
                 </Stack>
               </ShareIntentProvider>
             </SyncProvider>
