@@ -62,6 +62,11 @@ def test_extract_url_keeps_query_string() -> None:
         ("https://www.xiaohongshu.com/explore/abc123", Platform.XIAOHONGSHU),
         ("https://xiaohongshu.com/explore/abc123", Platform.XIAOHONGSHU),
         ("https://xhslink.com/a/b1c2d3", Platform.XIAOHONGSHU),
+        ("https://xhslink.cn/a/b1c2d3", Platform.XIAOHONGSHU),
+        ("https://www.xhs.cn/explore/abc123", Platform.XIAOHONGSHU),
+        ("https://t.co/abc123", Platform.X),
+        ("https://fixupx.com/elonmusk/status/1", Platform.X),
+        ("https://fixvx.com/elonmusk/status/1", Platform.X),
         ("https://example.com/post", Platform.WEB),
         ("https://notx.com/foo", Platform.WEB),
         ("https://notxiaohongshu.com/explore/1", Platform.WEB),
@@ -102,6 +107,17 @@ def test_normalize_url_unifies_twitter_domains() -> None:
         == "https://x.com/foo/status/1"
     )
     assert normalize_url("https://twitter.com/foo/status/1") == "https://x.com/foo/status/1"
+
+
+def test_normalize_url_keeps_tco_short_links() -> None:
+    # ``t.co/xxxx`` is a redirect stub: rewriting the host to ``x.com`` would 404.
+    assert normalize_url("https://t.co/abc123?s=20&utm_source=tw") == "https://t.co/abc123"
+    assert normalize_url("https://t.co/abc123") == "https://t.co/abc123"
+
+
+def test_normalize_url_rewrites_fixup_fixv_domains() -> None:
+    assert normalize_url("https://fixupx.com/foo/status/1") == "https://x.com/foo/status/1"
+    assert normalize_url("https://fixvx.com/foo/status/1") == "https://x.com/foo/status/1"
 
 
 def test_normalize_url_removes_generic_tracking_keys() -> None:

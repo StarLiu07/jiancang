@@ -1,10 +1,11 @@
 """Xiaohongshu (RED) extractor with layered fallbacks.
 
 Strategy:
-1. follow ``xhslink.com`` short links to the canonical note URL;
-2. parse ``window.__INITIAL_STATE__`` (falling back to ``og:*`` meta tags);
-3. optionally ask the MediaCrawler MCP bridge for ``social_detail``;
-4. always degrade to a partial clip instead of raising.
+1. unwrap ``/login?redirectPath=...`` shells and follow short links to the canonical note URL;
+2. parse ``window.__INITIAL_STATE__``;
+3. ask the MediaCrawler MCP bridge for ``social_detail`` before trusting og metadata;
+4. accept ``og:*`` only on real pages (never on login/risk shells), then degrade to a partial
+   clip instead of raising.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -39,11 +40,104 @@ XHS_REFERER = "https://www.xiaohongshu.com/"
 STATE_MARKER = "window.__INITIAL_STATE__"
 NOTE_ID_RE = re.compile(r"/(?:explore|discovery/item|item)/([0-9a-zA-Z]+)")
 
-_IMAGE_KEYS = ("urlDefault", "urlPre", "url", "masterUrl", "master_url", "url_default")
+# Xiaohongshu's WAF answers with a 302 to ``/login`` when ``Accept-Encoding`` is missing
+# or out of browser order, so the header set is explicit instead of relying on httpx defaults.
+XHS_HEADERS = {
+    **BROWSER_HEADERS,
+    "Accept-Encoding": "gzip, deflate",
+}
+
+_LOGIN_PATHS = ("/login", "/website-login")
+_SHELL_PATHS = ("/login", "/website-login", "/404")
+_REDIRECT_PARAM_KEYS = ("redirectPath", "redirect_path", "redirect")
+_SHELL_TITLES = {"小红书", "小红书 - 标记我的生活", "xiaohongshu"}
+_SHELL_TITLE_MARKERS = ("你的生活兴趣社区", "标记我的生活")
+
+# Best single image per ``imageList`` entry, defaults first and previews last.
+_PRIMARY_IMAGE_KEYS = ("urlDefault", "masterUrl", "master_url", "url_default")
+_FALLBACK_IMAGE_KEYS = ("url", "urlPre")
+_DEFAULT_IMAGE_SCENE = "WB_DFT"
+_XHSCDN_SUFFIX = "xhscdn.com"
+
+_INLINE_WS_RE = re.compile(r"[ \t\u3000]+")
+_BLANKLINES_RE = re.compile(r"\n{3,}")
 
 
 def _clean(value: object) -> str:
     return " ".join(str(value).split()).strip() if value else ""
+
+
+def _path_of(url: str) -> str:
+    candidate = url if "://" in url else "//" + (url or "").lstrip("/")
+    try:
+        return urlsplit(candidate).path or ""
+    except ValueError:
+        return ""
+
+
+def _path_matches(path: str, prefixes: tuple[str, ...]) -> bool:
+    normalized = (path or "").rstrip("/")
+    return any(normalized == prefix or normalized.startswith(prefix + "/") for prefix in prefixes)
+
+
+def unwrap_xhs_redirect(url: str) -> str:
+    """Return the real note URL hidden in a ``/login?redirectPath=...`` shell.
+
+    Used both to repair clips whose stored URL was already polluted with the login page and
+    to avoid saving that shell URL back over the original link.
+    """
+    if not url:
+        return url
+    candidate = url if "://" in url else "//" + url.lstrip("/")
+    try:
+        parts = urlsplit(candidate)
+    except ValueError:
+        return url
+    if not _path_matches(parts.path, _LOGIN_PATHS):
+        return url
+    params = parse_qs(parts.query)
+    for key in _REDIRECT_PARAM_KEYS:
+        values = params.get(key)
+        if not values:
+            continue
+        target = (values[0] or "").strip()
+        if not target:
+            continue
+        if target.startswith("//"):
+            return "https:" + target
+        if "://" in target:
+            return target
+        base = f"{parts.scheme or 'https'}://{parts.netloc}"
+        return urljoin(base + "/", target)
+    return url
+
+
+def _is_shell_title(title: str) -> bool:
+    value = _clean(title)
+    if not value:
+        return False
+    return value in _SHELL_TITLES or any(marker in value for marker in _SHELL_TITLE_MARKERS)
+
+
+def _has_note_description(description: str) -> bool:
+    value = _clean(description)
+    return bool(value) and not _is_shell_title(value)
+
+
+def is_xhs_shell_page(final_url: str, html: str) -> bool:
+    """True when the response is Xiaohongshu's login/risk shell instead of a note page."""
+    if _path_matches(_path_of(final_url), _SHELL_PATHS):
+        return True
+    soup = BeautifulSoup(html, "html.parser")
+    title = (
+        meta_content(soup, "og:title")
+        or meta_content(soup, "twitter:title")
+        or (soup.title.get_text(strip=True) if soup.title else "")
+    )
+    if not _is_shell_title(title):
+        return False
+    description = meta_content(soup, "og:description") or meta_content(soup, "description")
+    return not _has_note_description(description)
 
 
 def extract_note_id(url: str) -> str | None:
@@ -170,37 +264,64 @@ def find_note(state: object) -> dict | None:
     return _deep_find_note(state)
 
 
+def _upgrade_xhscdn(url: str) -> str:
+    """Serve Xiaohongshu CDN images over HTTPS; leave every other URL untouched."""
+    if not url.lower().startswith("http://"):
+        return url
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return url
+    if host == _XHSCDN_SUFFIX or host.endswith("." + _XHSCDN_SUFFIX):
+        return "https://" + url[len("http://") :]
+    return url
+
+
+def _pick_image_url(item: dict) -> str:
+    """Pick the single best URL for one ``imageList`` entry (defaults over previews)."""
+    for key in _PRIMARY_IMAGE_KEYS:
+        value = _clean(item.get(key))
+        if value:
+            return value
+    entries = [entry for entry in item.get("infoList") or [] if isinstance(entry, dict)]
+    for entry in entries:
+        if _clean(entry.get("imageScene")) == _DEFAULT_IMAGE_SCENE:
+            value = _clean(entry.get("url"))
+            if value:
+                return value
+    for key in _FALLBACK_IMAGE_KEYS:
+        value = _clean(item.get(key))
+        if value:
+            return value
+    for entry in entries:
+        value = _clean(entry.get("url"))
+        if value:
+            return value
+    return ""
+
+
 def _note_images(note: dict) -> list[str]:
     urls: list[str] = []
 
     def add(value: object) -> None:
-        url = _clean(value)
+        url = _upgrade_xhscdn(_clean(value))
         if url.startswith(("http://", "https://")) and url not in urls:
             urls.append(url)
 
     for item in note.get("imageList") or []:
         if isinstance(item, str):
             add(item)
-            continue
-        if not isinstance(item, dict):
-            continue
-        for key in _IMAGE_KEYS:
-            if item.get(key):
-                add(item.get(key))
-                break
-        for entry in item.get("infoList") or []:
-            if isinstance(entry, dict):
-                add(entry.get("url"))
+        elif isinstance(item, dict):
+            # One URL per image: collecting every ``infoList`` entry used to duplicate
+            # each picture and drag low-resolution previews into the clip.
+            add(_pick_image_url(item))
 
     for key in ("images", "image_list", "imageUrls"):
         for item in note.get(key) or []:
             if isinstance(item, str):
                 add(item)
             elif isinstance(item, dict):
-                for image_key in _IMAGE_KEYS:
-                    if item.get(image_key):
-                        add(item.get(image_key))
-                        break
+                add(_pick_image_url(item))
 
     video = note.get("video")
     if isinstance(video, dict):
@@ -225,15 +346,23 @@ def _note_time(note: dict) -> str | None:
     return None
 
 
+def _clean_desc(text: str) -> str:
+    """Collapse inline whitespace while keeping the author's line/paragraph breaks."""
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [_INLINE_WS_RE.sub(" ", line).strip() for line in normalized.split("\n")]
+    return _BLANKLINES_RE.sub("\n\n", "\n".join(lines)).strip()
+
+
 def _note_body_text(note: dict) -> str:
     """Prefer plain description; fall back to converting a rich-text body if present."""
-    desc = _clean(note.get("desc") or note.get("description"))
-    if desc:
-        return desc
+    desc = note.get("desc") or note.get("description")
+    body = _clean_desc(str(desc)) if desc else ""
+    if body:
+        return body
     for key in ("content", "noteContent", "body"):
         value = note.get(key)
         if isinstance(value, str) and value.strip():
-            return _clean(html_to_markdown(value))
+            return _clean_desc(html_to_markdown(value))
     return ""
 
 
@@ -261,16 +390,19 @@ class XiaohongshuExtractor:
         raw_input: str = "",
         client: httpx.AsyncClient | None = None,
     ) -> ExtractedContent:
+        # Older clips stored the ``/login?redirectPath=...`` shell instead of the note URL.
+        url = unwrap_xhs_redirect(url)
         final_url = url
         errors: list[str] = []
         og: dict[str, str] = {}
 
         try:
             async with use_client(client, timeout=self.timeout) as http:
-                headers = dict(BROWSER_HEADERS)
+                headers = dict(XHS_HEADERS)
                 headers["User-Agent"] = self.user_agent
                 response = await http.get(url, headers=headers, follow_redirects=True)
-                final_url = str(response.url) or url
+                # Never persist the login shell over the user's original link.
+                final_url = unwrap_xhs_redirect(str(response.url) or url)
                 response.raise_for_status()
                 html = response.text
 
@@ -279,14 +411,19 @@ class XiaohongshuExtractor:
                 if note is not None:
                     return self._build_from_note(note, final_url, raw_input)
 
-                og = self._og_fallback(html)
-                if og:
-                    return self._build_from_og(og, final_url, raw_input)
-
+                # Risk control first: the login shell ships generic og tags that would
+                # otherwise masquerade as a partially successful note.
                 mcp_content = await self._call_mcp(http, final_url, note_id, raw_input)
                 if mcp_content is not None:
                     return mcp_content
-                errors.append("未在页面中找到 window.__INITIAL_STATE__ 笔记数据")
+
+                if is_xhs_shell_page(final_url, html):
+                    errors.append("小红书返回了登录/风控壳页，未能获取笔记正文")
+                else:
+                    og = self._og_fallback(html)
+                    if og:
+                        return self._build_from_og(og, final_url, raw_input)
+                    errors.append("未在页面中找到 window.__INITIAL_STATE__ 笔记数据")
         except Exception as exc:  # noqa: BLE001 - risk control / network must not crash
             logger.warning("Xiaohongshu extraction failed for %s: %s", url, exc)
             errors.append(f"{type(exc).__name__}: {exc}")

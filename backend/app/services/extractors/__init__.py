@@ -43,6 +43,31 @@ def build_extractor(
     return GenericWebExtractor()
 
 
+async def _reroute_after_redirect(
+    content: ExtractedContent,
+    initial_platform: Platform,
+    raw_input: str,
+    settings: Settings,
+    client: httpx.AsyncClient,
+) -> ExtractedContent:
+    """Re-dispatch a generic fetch that landed on a dedicated platform page.
+
+    Short links (``t.co``, unknown redirectors, ...) only reveal their real platform
+    after the HTTP redirect, so the generic extractor resolves the final URL first and
+    we hand the follow-up work to the platform-specific extractor.
+    """
+    if initial_platform is not Platform.WEB:
+        return content
+    target = detect_platform(content.url)
+    if target is Platform.WECHAT:
+        return await WeChatExtractor().extract(content.url, raw_input, client)
+    if target is Platform.XIAOHONGSHU:
+        return await XiaohongshuExtractor(settings).extract(content.url, raw_input, client)
+    if target is Platform.X:
+        return await XExtractor().extract(content.url, raw_input, client)
+    return content
+
+
 async def extract_content(
     url: str,
     platform: Platform | None = None,
@@ -54,7 +79,9 @@ async def extract_content(
     """Fetch and parse ``url`` with the extractor matching ``platform``.
 
     ``platform`` defaults to auto-detection from the URL, so callers that only have the
-    link (or a share caption) do not need to resolve the platform first.
+    link (or a share caption) do not need to resolve the platform first. When the generic
+    extractor follows a redirect onto a dedicated platform page, extraction is re-routed to
+    that platform's extractor.
 
     Never raises: unexpected failures are returned as a ``partial`` clip so the caller can
     persist whatever it has and surface ``error_message`` in the UI.
@@ -65,12 +92,18 @@ async def extract_content(
 
     try:
         if client is not None:
-            return await extractor.extract(url, raw_input, client)
+            content = await extractor.extract(url, raw_input, client)
+            return await _reroute_after_redirect(
+                content, resolved_platform, raw_input, resolved_settings, client
+            )
         async with httpx.AsyncClient(
             timeout=resolved_settings.http_timeout_seconds,
             follow_redirects=True,
         ) as owned:
-            return await extractor.extract(url, raw_input, owned)
+            content = await extractor.extract(url, raw_input, owned)
+            return await _reroute_after_redirect(
+                content, resolved_platform, raw_input, resolved_settings, owned
+            )
     except Exception as exc:  # noqa: BLE001 - last-resort guard, never crash the API
         logger.exception("Extractor for %s failed on %s", resolved_platform, url)
         raw = (raw_input or "").strip() or url
