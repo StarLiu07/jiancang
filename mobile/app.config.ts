@@ -12,7 +12,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: '剪藏',
   slug: 'jiancang',
-  version: '0.5.1',
+  version: '0.6.0',
   orientation: 'portrait',
   scheme: 'jiancang',
   icon: './assets/icon.png',
