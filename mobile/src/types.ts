@@ -199,6 +199,8 @@ export interface SyncPushResponse {
   skipped_ids: string[];
   missing_media_ids: string[];
   queued_ai_ids: string[];
+  /** Clips the server must re-extract itself (older backends omit this). */
+  queued_extract_ids?: string[];
   server_version: number;
 }
 
@@ -215,6 +217,29 @@ export interface SyncMediaUploadResponse {
   size_bytes: number;
   sha256: string;
   mime_type: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Stateless remote extraction (mirrors StatelessExtract*)                     */
+/* -------------------------------------------------------------------------- */
+
+export interface StatelessExtractRequest {
+  url: string;
+  raw_input?: string;
+}
+
+export interface StatelessExtractResponse {
+  platform: Platform;
+  url: string;
+  title: string;
+  author: string;
+  published_at: string | null;
+  content_markdown: string;
+  content_text: string;
+  image_urls: string[];
+  partial: boolean;
+  error_message: string | null;
+  referer: string | null;
 }
 
 /* -------------------------------------------------------------------------- */

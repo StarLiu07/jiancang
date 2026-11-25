@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ApiError, api, buildAuthHeaders, mediaUrl } from '../src/api/client.ts';
+import { ApiError, DEFAULT_EXTRACT_TIMEOUT_MS, api, buildAuthHeaders, mediaUrl } from '../src/api/client.ts';
 import { formatSyncSummary } from '../src/sync/engine.ts';
 
 const CONFIG = { baseUrl: 'http://192.168.31.98:8420', token: 'secret-token' };
@@ -238,6 +238,95 @@ test('api.sendClipChat forwards the caller abort signal', async () => {
         assert.equal(error.status, 0);
         return true;
       });
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// api.extractRemote (remote extraction fallback contract)
+// ---------------------------------------------------------------------------
+
+const EXTRACT_INPUT = {
+  url: 'https://www.xiaohongshu.com/explore/65f0abc?xsec_token=ABC',
+  raw_input: '打开小红书看看【标题】 😆 http://xhslink.com/a/xyz',
+};
+
+const EXTRACT_RESULT = {
+  platform: 'xiaohongshu',
+  url: EXTRACT_INPUT.url,
+  title: '标题',
+  author: '作者',
+  published_at: '2026-01-02',
+  content_markdown: '## 正文',
+  content_text: '正文',
+  image_urls: ['https://cdn.example.com/1.jpg'],
+  partial: false,
+  error_message: null,
+  referer: 'https://www.xiaohongshu.com/',
+};
+
+test('api.extractRemote POSTs /api/extract with auth headers, body and parsed response', async () => {
+  await withMockFetch(
+    () => jsonResponse(EXTRACT_RESULT),
+    async (calls) => {
+      const payload = await api.extractRemote(CONFIG, EXTRACT_INPUT);
+
+      assert.deepEqual(payload, EXTRACT_RESULT);
+      assert.equal(payload.published_at, '2026-01-02');
+      assert.equal(payload.error_message, null);
+      assert.equal(payload.referer, 'https://www.xiaohongshu.com/');
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, 'http://192.168.31.98:8420/api/extract');
+      assert.equal(calls[0].init.method, 'POST');
+      assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-token');
+      assert.equal(calls[0].init.headers['Content-Type'], 'application/json');
+      assert.deepEqual(JSON.parse(calls[0].init.body), EXTRACT_INPUT);
+
+      // `raw_input` is optional: omit it and the payload must stay minimal.
+      await api.extractRemote({ baseUrl: CONFIG.baseUrl, token: '  ' }, { url: EXTRACT_INPUT.url });
+      assert.equal(calls[1].url, 'http://192.168.31.98:8420/api/extract');
+      assert.equal(calls[1].init.headers.Authorization, undefined);
+      assert.deepEqual(JSON.parse(calls[1].init.body), { url: EXTRACT_INPUT.url });
+    },
+  );
+});
+
+test('api.extractRemote uses the documented timeout and surfaces ApiError', async () => {
+  assert.equal(DEFAULT_EXTRACT_TIMEOUT_MS, 25_000);
+
+  // The constant must actually be wired into the request budget.
+  const originalSetTimeout = globalThis.setTimeout;
+  const delays = [];
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    delays.push(ms);
+    return originalSetTimeout(fn, ms, ...rest);
+  };
+  try {
+    await withMockFetch(
+      () => jsonResponse(EXTRACT_RESULT),
+      () => api.extractRemote(CONFIG, EXTRACT_INPUT),
+    );
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+  assert.ok(
+    delays.includes(DEFAULT_EXTRACT_TIMEOUT_MS),
+    `expected a ${DEFAULT_EXTRACT_TIMEOUT_MS}ms timeout, saw ${JSON.stringify(delays)}`,
+  );
+
+  await withMockFetch(
+    () => jsonResponse({ detail: '抓取被风控拦截' }, 502),
+    async () => {
+      await assert.rejects(
+        () => api.extractRemote(CONFIG, EXTRACT_INPUT),
+        (error) => {
+          assert.ok(error instanceof ApiError);
+          assert.equal(error.status, 502);
+          assert.equal(error.detail, '抓取被风控拦截');
+          return true;
+        },
+      );
     },
   );
 });

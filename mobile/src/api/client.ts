@@ -16,6 +16,8 @@ import type {
   ReviewTodayResponse,
   StatelessChatRequest,
   StatelessChatResponse,
+  StatelessExtractRequest,
+  StatelessExtractResponse,
   SyncMediaUploadResponse,
   SyncPullResponse,
   SyncPushRequest,
@@ -28,6 +30,8 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 8000;
 /** AI chat turns run an LLM round-trip, so they get a wider budget. */
 const DEFAULT_CHAT_TIMEOUT_MS = 60_000;
+/** Remote (server-side) extraction fetches a full page, so it needs room too. */
+export const DEFAULT_EXTRACT_TIMEOUT_MS = 25_000;
 const SYNC_PULL_LIMIT = 100;
 /** Device-local URIs that must never be routed through the backend. */
 const LOCAL_URI_RE = /^(?:file|content|data):/i;
@@ -281,6 +285,20 @@ export const api = {
       method: 'POST',
       body: input,
       timeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
+      signal,
+    });
+  },
+
+  /** Stateless remote extraction fallback (`POST /api/extract`). */
+  extractRemote(
+    config: ApiConfig,
+    input: StatelessExtractRequest,
+    signal?: AbortSignal,
+  ): Promise<StatelessExtractResponse> {
+    return request<StatelessExtractResponse>(config, '/api/extract', {
+      method: 'POST',
+      body: input,
+      timeoutMs: DEFAULT_EXTRACT_TIMEOUT_MS,
       signal,
     });
   },
