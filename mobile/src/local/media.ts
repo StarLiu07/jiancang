@@ -13,7 +13,15 @@
 import { generateHexId } from './urlUtils';
 
 export const MEDIA_API_PREFIX = '/api/media/';
-export const DEFAULT_USER_AGENT = 'Mozilla/5.0';
+/**
+ * Desktop Chrome UA shared with `extractors/generic.ts`. Android's OkHttp
+ * default (`okhttp/4.x`) and the old bare `Mozilla/5.0` are rejected by most
+ * image CDNs (XHS, WeChat mmbiz, pbs.twimg) with a 403/empty body.
+ */
+export const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+  'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+  'Chrome/131.0.0.0 Safari/537.36';
 export const DEFAULT_MAX_BYTES = 15 * 1024 * 1024;
 
 const EXT_BY_MIME: Record<string, string> = {
@@ -68,6 +76,37 @@ export interface StoredMediaLike {
 
 function clean(value: unknown): string {
   return typeof value === 'string' ? value.trim() : value === null || value === undefined ? '' : String(value).trim();
+}
+
+/**
+ * Turn a stored `media.local_path` into a URI React Native can render.
+ *
+ * Rows written by `downloadAndStoreImages` hold a path *relative* to
+ * `<documentDirectory>media/` (e.g. `clips/<id>/<sha256>.jpg`), while synced
+ * rows may already hold an absolute `file://`/`content://` URI. Resolving only
+ * the `file://` case used to fall back to `/api/media/{id}` for every locally
+ * downloaded image, i.e. a blank box whenever the NUC was unreachable.
+ *
+ * Pure + synchronous so both `db.ts` and tests can use it.
+ */
+export function resolveMediaFileUri(
+  localPath: string | null | undefined,
+  documentDirectory: string | null | undefined,
+): string | null {
+  const value = clean(localPath);
+  if (!value) return null;
+  if (/^(file|content):\/\//i.test(value)) return value;
+
+  const base = clean(documentDirectory);
+  if (!base) return null;
+
+  const relative = value.replace(/^\/+/, '');
+  if (!relative) return null;
+  // A stored path must stay inside the media directory.
+  if (relative.split('/').some((segment) => segment === '..')) return null;
+
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`;
+  return `${normalizedBase}media/${relative}`;
 }
 
 function normalizeMime(value: string | null | undefined): string {

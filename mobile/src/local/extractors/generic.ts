@@ -24,6 +24,9 @@ export const BROWSER_HEADERS: Record<string, string> = {
 
 export const NOISE_TAGS = ['script', 'style', 'nav', 'footer', 'aside', 'noscript', 'iframe', 'form', 'svg'];
 
+/** Reported when a page yields no readable body (JS-rendered or login-walled). */
+export const EMPTY_BODY_MESSAGE = '未能提取到正文内容（可能是动态渲染页或需要登录）';
+
 const LAZY_IMAGE_ATTRS = ['data-src', 'data-original', 'data-actualsrc', 'data-lazy-src', 'data-echo', 'src'];
 
 const OG_IMAGE_KEYS = ['og:image', 'og:image:url', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'];
@@ -598,7 +601,7 @@ export function parseGenericHtml(html: string, url: string, rawInput = ''): Extr
     content_text: contentText,
     image_urls: imageUrls,
     partial: !contentText,
-    error_message: null,
+    error_message: contentText ? null : EMPTY_BODY_MESSAGE,
     referer: pageOrigin(url),
   };
 }
@@ -607,7 +610,9 @@ export function parseGenericHtml(html: string, url: string, rawInput = ''): Extr
 export async function extractGeneric(url: string, rawInput = ''): Promise<ExtractedContent> {
   try {
     const page = await fetchHtml(url);
-    return parseGenericHtml(page.html, url, rawInput);
+    // Parse against the post-redirect URL: short links must not leak into the
+    // stored `url`, and relative image paths resolve against the final host.
+    return parseGenericHtml(page.html, page.finalUrl || url, rawInput);
   } catch (error) {
     return degradedContent({
       platform: 'web',
