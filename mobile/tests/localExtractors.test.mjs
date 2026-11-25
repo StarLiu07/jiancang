@@ -16,6 +16,7 @@ import {
   cleanImageUrl,
   extractGeneric,
   fallbackTitle,
+  fetchJson,
   htmlToMarkdown,
   htmlToText,
   parseGenericHtml,
@@ -25,10 +26,15 @@ import { extractContent } from '../src/local/extractors/index.ts';
 import { parseWeChatHtml } from '../src/local/extractors/wechat.ts';
 import { extractX, parseFxTwitterPayload, parseStatusUrl } from '../src/local/extractors/x.ts';
 import {
+  XHS_EXPLORE_HEADERS,
   XHS_HEADERS,
   XHS_LOGIN_BLOCK_MESSAGE,
+  XHS_MOBILE_USER_AGENT,
+  cleanXhsUrl,
   extractNoteId,
   extractXhs,
+  extractXhsShortLink,
+  isXhsShortLink,
   parseXhsHtml,
   unwrapXhsRedirect,
 } from '../src/local/extractors/xhs.ts';
@@ -327,6 +333,52 @@ test('htmlToMarkdown and htmlToText share block-level semantics', () => {
   assert.match(markdown, /  - 嵌套/);
   assert.match(markdown, /> 引用/);
   assert.equal(htmlToText(html), '小标题\n段落 斜体 链接\n一\n二\n嵌套\n引用');
+});
+
+// ---------------------------------------------------------------------------
+// stateless fetching (Android OkHttp CookieJar pollution)
+// ---------------------------------------------------------------------------
+
+/**
+ * Assert the request is stateless: `credentials: 'omit'` switches React Native
+ * Android to `CookieJar.NO_COOKIES`, so no `acw_tc` / `abRequestId` cookie is
+ * ever replayed or persisted.
+ */
+function assertStatelessRequest(call) {
+  assert.equal(call.init.credentials, 'omit');
+  // `cache: 'no-store'` would make whatwg-fetch append `&_=<ts>` to the URL and
+  // corrupt signed query params (XHS `xsec_token`).
+  assert.equal(Object.prototype.hasOwnProperty.call(call.init, 'cache'), false);
+}
+
+test('fetchHtml sends a stateless request', async () => {
+  const content = await withFetchMock(
+    () =>
+      fakeResponse('<html><body><article><p>正文段落</p></article></body></html>', {
+        url: 'https://example.com/a',
+      }),
+    async (calls) => {
+      const result = await extractGeneric('https://example.com/a');
+      assert.equal(calls.length, 1);
+      assertStatelessRequest(calls[0]);
+      return result;
+    },
+  );
+
+  assert.equal(content.partial, false);
+  assert.equal(content.content_text, '正文段落');
+});
+
+test('fetchJson sends a stateless request', async () => {
+  await withFetchMock(
+    () => fakeResponse(JSON.stringify({ ok: 1 }), { contentType: 'application/json' }),
+    async (calls) => {
+      const payload = await fetchJson('https://api.example.com/x');
+      assert.deepEqual(payload, { ok: 1 });
+      assert.equal(calls.length, 1);
+      assertStatelessRequest(calls[0]);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -654,6 +706,93 @@ test('XHS_HEADERS disables compression to slip past the WAF', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(BROWSER_HEADERS, 'Accept-Encoding'), false);
 });
 
+test('XHS_HEADERS advertises a top-level browser navigation', () => {
+  assert.equal(XHS_HEADERS['Sec-Fetch-Dest'], 'document');
+  assert.equal(XHS_HEADERS['Sec-Fetch-Mode'], 'navigate');
+  assert.equal(XHS_HEADERS['Sec-Fetch-Site'], 'none');
+  assert.equal(XHS_HEADERS['Sec-Fetch-User'], '?1');
+  assert.equal(XHS_HEADERS['Upgrade-Insecure-Requests'], '1');
+  assert.equal(XHS_HEADERS['Cache-Control'], 'no-cache');
+  // Identity encoding must survive the extra headers.
+  assert.equal(XHS_HEADERS['Accept-Encoding'], 'gzip;q=0, deflate;q=0, identity');
+
+  // The `/explore` retry keeps every navigation header but swaps the UA.
+  assert.equal(XHS_EXPLORE_HEADERS['User-Agent'], XHS_MOBILE_USER_AGENT);
+  assert.match(XHS_MOBILE_USER_AGENT, /Android/);
+  assert.match(XHS_MOBILE_USER_AGENT, /Mobile Safari/);
+  assert.equal(XHS_EXPLORE_HEADERS['Accept-Encoding'], 'gzip;q=0, deflate;q=0, identity');
+  assert.equal(XHS_EXPLORE_HEADERS['Sec-Fetch-Mode'], 'navigate');
+});
+
+test('XHS_LOGIN_BLOCK_MESSAGE tells the user what to do next', () => {
+  assert.match(XHS_LOGIN_BLOCK_MESSAGE, /风控|登录/);
+  assert.match(XHS_LOGIN_BLOCK_MESSAGE, /代理|VPN/);
+  assert.match(XHS_LOGIN_BLOCK_MESSAGE, /NUC/);
+});
+
+test('cleanXhsUrl upgrades TLS and drops only the exSource=null noise', () => {
+  assert.equal(
+    cleanXhsUrl('http://www.xiaohongshu.com/explore/64f0abc?exSource=null&xsec_token=TOKEN&xsec_source=pc_feed'),
+    'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN&xsec_source=pc_feed',
+  );
+  // Non-XHS URLs and non-null exSource values are untouched.
+  assert.equal(cleanXhsUrl('http://example.com/a?exSource=null'), 'http://example.com/a?exSource=null');
+  assert.equal(
+    cleanXhsUrl('https://www.xiaohongshu.com/explore/64f0abc?exSource=feed'),
+    'https://www.xiaohongshu.com/explore/64f0abc?exSource=feed',
+  );
+  assert.equal(cleanXhsUrl(''), '');
+});
+
+test('unwrapXhsRedirect upgrades http note URLs and strips exSource=null', () => {
+  assert.equal(
+    unwrapXhsRedirect('http://www.xiaohongshu.com/explore/64f0abc?exSource=null&xsec_token=T'),
+    'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=T',
+  );
+  // An http redirect target must be upgraded as well.
+  assert.equal(
+    unwrapXhsRedirect(
+      `https://www.xiaohongshu.com/login?redirectPath=${encodeURIComponent(
+        'http://www.xiaohongshu.com/explore/64f0def?exSource=null&xsec_token=T&xsec_source=pc_feed',
+      )}`,
+    ),
+    'https://www.xiaohongshu.com/explore/64f0def?xsec_token=T&xsec_source=pc_feed',
+  );
+});
+
+test('unwrapXhsRedirect unwraps nested /404 shells', () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN';
+  const inner = `/404/sec_5f2c?redirectPath=${encodeURIComponent(noteUrl)}`;
+  assert.equal(
+    unwrapXhsRedirect(`https://www.xiaohongshu.com/404?source=${encodeURIComponent(inner)}`),
+    noteUrl,
+  );
+  assert.equal(
+    unwrapXhsRedirect(`https://www.xiaohongshu.com${inner}`),
+    noteUrl,
+  );
+  // A shell without a usable target must not be rewritten into garbage.
+  assert.equal(
+    unwrapXhsRedirect('https://www.xiaohongshu.com/404?source=/404/sec_5f2c'),
+    'https://www.xiaohongshu.com/404?source=/404/sec_5f2c',
+  );
+});
+
+test('short link helpers recognise every share host', () => {
+  assert.equal(isXhsShortLink('https://xhslink.cn/o/b1c2d3'), true);
+  assert.equal(isXhsShortLink('http://xhslink.com/a/b1c2d3'), true);
+  assert.equal(isXhsShortLink('https://www.xhs.cn/o/b1c2d3'), true);
+  assert.equal(isXhsShortLink('https://www.xiaohongshu.com/explore/64f0abc'), false);
+  assert.equal(isXhsShortLink(''), false);
+
+  assert.equal(
+    extractXhsShortLink('我的笔记 http://xhslink.cn/o/b1c2d3 复制后打开【小红书】'),
+    'http://xhslink.cn/o/b1c2d3',
+  );
+  assert.equal(extractXhsShortLink('只有文案没有链接 https://example.com/a'), null);
+  assert.equal(extractXhsShortLink(''), null);
+});
+
 test('unwrapXhsRedirect recovers the note URL from the login shell', () => {
   const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN&xsec_source=pc_feed';
   const login = `https://www.xiaohongshu.com/login?redirectPath=${encodeURIComponent(noteUrl)}`;
@@ -800,6 +939,143 @@ test('extractXhs degrades (never stores /login) when the login wall persists', a
   assert.equal(content.error_message, XHS_LOGIN_BLOCK_MESSAGE);
   assert.equal(content.url, noteUrl);
   assert.doesNotMatch(content.url, /\/login/);
+});
+
+// ---------------------------------------------------------------------------
+// Xiaohongshu self-healing (login wall vs fresh session / mobile UA / short link)
+// ---------------------------------------------------------------------------
+
+const XHS_SHELL_HTML = `<html><head>
+    <meta property="og:title" content="小红书 - 你的生活兴趣社区">
+    <meta property="og:image" content="https://sns.xhscdn.com/logo.png">
+  </head><body><div class="login-box">登录</div></body></html>`;
+
+function xhsNoteHtml(title) {
+  return xhsStateHtml({
+    title,
+    desc: '正文内容',
+    user: { nickname: '作者' },
+    imageList: [{ urlDefault: 'http://sns-webpic-qc.xhscdn.com/a.jpg' }],
+  });
+}
+
+function loginShellResponse(noteUrl) {
+  return fakeResponse(XHS_SHELL_HTML, {
+    url: `https://www.xiaohongshu.com/login?redirectPath=${encodeURIComponent(noteUrl)}`,
+  });
+}
+
+test('extractXhs self-heals through /explore with an Android Chrome UA', async () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN';
+
+  const content = await withFetchMock(
+    (url, init) => {
+      if (url !== noteUrl) return null;
+      const ua = String((init.headers || {})['User-Agent'] || '');
+      // Desktop Chrome is walled; the very same note is readable as Android.
+      return ua.includes('Android')
+        ? fakeResponse(xhsNoteHtml('绕过风控的笔记'), { url: noteUrl })
+        : loginShellResponse(noteUrl);
+    },
+    async (calls) => {
+      const result = await extractXhs(noteUrl, '分享文案');
+      for (const call of calls) assertStatelessRequest(call);
+
+      const mobile = calls.filter((call) => String(call.headers['User-Agent']).includes('Android'));
+      assert.equal(mobile.length, 1, 'the /explore retry must use the mobile UA');
+      assert.equal(mobile[0].url, noteUrl);
+      assert.equal(mobile[0].headers['Accept-Encoding'], 'gzip;q=0, deflate;q=0, identity');
+      assert.equal(mobile[0].headers['Sec-Fetch-Mode'], 'navigate');
+      assert.equal(calls.length, 2, 'a duplicate URL + header profile is never replayed');
+      return result;
+    },
+  );
+
+  assert.equal(content.partial, false);
+  assert.equal(content.title, '绕过风控的笔记');
+  assert.equal(content.url, noteUrl);
+  assert.deepEqual(content.image_urls, ['https://sns-webpic-qc.xhscdn.com/a.jpg']);
+});
+
+test('extractXhs heals a rewritten clip.url by re-walking the raw short link', async () => {
+  const wrongNote = 'https://www.xiaohongshu.com/explore/6yY8iOgqvC4?xsec_token=OLD';
+  const shortLink = 'https://xhslink.cn/o/b1c2d3';
+  const realNote = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=NEW';
+  const raw = `旧剪藏 ${shortLink} 复制后打开【小红书】`;
+
+  const content = await withFetchMock(
+    (url) => {
+      // The stored note id is wrong: it only ever answers with the login shell.
+      if (url === wrongNote) return loginShellResponse(wrongNote);
+      if (url === shortLink) return loginShellResponse(realNote);
+      if (url === realNote) return fakeResponse(xhsNoteHtml('短链自愈的笔记'), { url: realNote });
+      return null;
+    },
+    async (calls) => {
+      const result = await extractXhs(wrongNote, raw);
+      const urls = calls.map((call) => call.url);
+      assert.ok(urls.includes(shortLink), 'the share caption short link must be re-walked');
+      assert.ok(urls.includes(realNote), 'the real note URL must be fetched');
+      for (const call of calls) assertStatelessRequest(call);
+      return result;
+    },
+  );
+
+  assert.equal(content.partial, false);
+  assert.equal(content.title, '短链自愈的笔记');
+  assert.equal(content.url, realNote);
+});
+
+test('extractXhs keeps the share short link when the login wall never lifts', async () => {
+  const shortLink = 'https://xhslink.cn/o/b1c2d3';
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN';
+  const raw = `我的笔记 ${shortLink} 复制后打开【小红书】`;
+
+  const content = await withFetchMock(
+    () => loginShellResponse(noteUrl),
+    async () => extractXhs(shortLink, raw),
+  );
+
+  assert.equal(content.partial, true);
+  assert.equal(content.url, shortLink, 'an unverified redirect must never replace the short link');
+  assert.doesNotMatch(content.url, /\/login|\/404/);
+  assert.equal(content.error_message, XHS_LOGIN_BLOCK_MESSAGE);
+  assert.match(content.content_text, /我的笔记/);
+});
+
+test('extractXhs unwraps a stored /404 shell before requesting it', async () => {
+  const noteUrl = 'https://www.xiaohongshu.com/explore/64f0abc?xsec_token=TOKEN';
+  const inner = `/404/sec_5f2c?redirectPath=${encodeURIComponent(noteUrl)}`;
+  const stored = `https://www.xiaohongshu.com/404?source=${encodeURIComponent(inner)}`;
+
+  const content = await withFetchMock(
+    (url) => (url === noteUrl ? fakeResponse(xhsNoteHtml('从 404 壳页自愈'), { url: noteUrl }) : null),
+    async (calls) => {
+      const result = await extractXhs(stored, '');
+      assert.equal(calls.length, 1, 'the shell must be unwrapped before the request');
+      assert.equal(calls[0].url, noteUrl);
+      assertStatelessRequest(calls[0]);
+      return result;
+    },
+  );
+
+  assert.equal(content.partial, false);
+  assert.equal(content.title, '从 404 壳页自愈');
+  assert.equal(content.url, noteUrl);
+  assert.doesNotMatch(content.url, /\/404/);
+});
+
+test('extractXhs never stores a dead-end /404 shell as the clip URL', async () => {
+  const stored = 'https://www.xiaohongshu.com/404?source=%2F404%2Fsec_5f2c';
+
+  const content = await withFetchMock(
+    () => fakeResponse(XHS_SHELL_HTML, { url: stored }),
+    async () => extractXhs(stored, '分享文案'),
+  );
+
+  assert.equal(content.partial, true);
+  assert.equal(content.url, 'https://www.xiaohongshu.com/');
+  assert.doesNotMatch(content.url, /\/404|\/login/);
 });
 
 // ---------------------------------------------------------------------------

@@ -71,7 +71,7 @@ export default function ClipDetailScreen() {
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const clipId = Array.isArray(params.id) ? params.id[0] : params.id;
   const router = useRouter();
-  const { config, localAiConfig } = useSettings();
+  const { config, localAiConfig, settings } = useSettings();
   const { show } = useToast();
 
   const [clip, setClip] = useState<ClipDetail | null>(null);
@@ -240,7 +240,11 @@ export default function ClipDetailScreen() {
     if (!clip || retrying) return;
     setRetrying(true);
     try {
-      const updated = await localRepo.retryClip(clip.id, localAiConfig);
+      const updated = await localRepo.retryClip(clip.id, localAiConfig, {
+        // A phone-side XHS login block may still be readable from the NUC.
+        apiConfig: config,
+        syncEnabled: settings.syncEnabled,
+      });
       setClip(updated);
       setForm(toForm(updated));
       show('已重新提交抓取', 'success');

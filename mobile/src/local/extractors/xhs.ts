@@ -2,9 +2,12 @@
  * Xiaohongshu (RED) extractor with layered fallbacks.
  *
  * Strategy (mirrors `backend/app/services/extractors/xhs.py`):
- * 1. follow `xhslink.com` short links to the canonical note URL;
+ * 1. follow `xhslink.com` / `xhslink.cn` / `xhs.cn` short links to the note URL;
  * 2. parse `window.__INITIAL_STATE__` (falling back to `og:*` meta tags);
- * 3. always degrade to a partial clip instead of raising.
+ * 3. self-heal with different URL + header profiles when the WAF answers with a
+ *    login / 404 shell (see `extractXhs`);
+ * 4. always degrade to a partial clip instead of raising, and never persist a
+ *    `/login?...` or `/404?...` shell as the clip URL.
  *
  * The MediaCrawler MCP bridge is server-only and intentionally not ported:
  * offline mobile clipping must work without extra infrastructure.
@@ -28,7 +31,8 @@ import {
   metaContent,
   ogImages,
 } from './generic';
-import { normalizeUrl, splitUrlParts } from '../urlUtils';
+import { extractUrl, normalizeUrl, splitUrlParts } from '../urlUtils';
+import type { ParsedUrlParts } from '../urlUtils';
 
 export const XHS_REFERER = 'https://www.xiaohongshu.com/';
 export const STATE_MARKER = 'window.__INITIAL_STATE__';
@@ -50,13 +54,53 @@ export const STATE_MARKER = 'window.__INITIAL_STATE__';
 export const XHS_HEADERS: Record<string, string> = {
   ...BROWSER_HEADERS,
   'Accept-Encoding': 'gzip;q=0, deflate;q=0, identity',
+  // The WAF also fingerprints the navigation headers: a top-level browser
+  // navigation never asks for a cached page and always announces itself.
+  'Cache-Control': 'no-cache',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Upgrade-Insecure-Requests': '1',
+};
+
+/** Android Chrome profile used by the `/explore/<noteId>` self-healing retry. */
+export const XHS_MOBILE_USER_AGENT =
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) ' +
+  'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+  'Chrome/131.0.0.0 Mobile Safari/537.36';
+
+/**
+ * Second-chance transport profile.
+ *
+ * The login wall is usually served because the request looks like a desktop
+ * scraper; the very same note is often readable through a plain Android Chrome
+ * navigation (same `identity` encoding trick as `XHS_HEADERS`).
+ */
+export const XHS_EXPLORE_HEADERS: Record<string, string> = {
+  ...XHS_HEADERS,
+  'User-Agent': XHS_MOBILE_USER_AGENT,
 };
 
 /** Shown when the WAF/login wall is all we got back. */
-export const XHS_LOGIN_BLOCK_MESSAGE = '触发小红书登录拦截，无法直接读取笔记';
+export const XHS_LOGIN_BLOCK_MESSAGE =
+  '小红书触发了登录/风控拦截，可能受 VPN/代理或 5G 出口 IP 影响；'
+  + '建议关闭代理后重试，或在设置里开启家庭 NUC 兜底抓取';
 
 const LOGIN_PATH_RE = /^\/(?:website-)?login(?:\/|$)/;
 const NOT_FOUND_PATH_RE = /^\/404(?:\/|$)/;
+
+/** `xiaohongshu.com` and every subdomain (redirect targets are upgraded to TLS). */
+const XHS_HOST_RE = /(?:^|\.)xiaohongshu\.com$/i;
+
+/** Share short-link hosts: the only URL that still self-heals on a retry. */
+const XHS_SHORT_HOSTS = ['xhslink.cn', 'xhslink.com', 'xhs.cn'];
+
+const SHORT_LINK_SCAN_RE =
+  /https?:\/\/(?:[A-Za-z0-9-]+\.)*(?:xhslink\.cn|xhslink\.com|xhs\.cn)\/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]*/gi;
+
+const ABSOLUTE_URL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+const BARE_HOST_RE = /^(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:[/?#]|$)/;
 const SITE_NAME_TITLES = new Set(['小红书', '小红书 - 你的生活兴趣社区']);
 const XHSCDN_HTTP_RE = /^http:\/\/(?:[^/]*\.)?xhscdn\.com\//i;
 const INLINE_SPACE_RE = /[ \t\u00a0\u3000]+/g;
@@ -85,37 +129,144 @@ function isLoginLandingPage(url: string): boolean {
   return LOGIN_PATH_RE.test(path) || NOT_FOUND_PATH_RE.test(path);
 }
 
+function isXhsHost(hostname: string): boolean {
+  return Boolean(hostname) && XHS_HOST_RE.test(hostname);
+}
+
 /**
- * Unwrap `/login?redirectPath=<real note>` into the note URL.
+ * Normalize a Xiaohongshu URL: force TLS and drop redirect noise.
  *
- * Needed twice: the WAF redirect itself, and old clips that already stored the
- * `/login?...` URL (re-fetching them must recover the real note).
+ * The redirect chain appends `exSource=null`; it is pure noise and (being an
+ * unencoded duplicate key) confuses the note API. `xsec_token` / `xsec_source`
+ * and every other param are preserved verbatim because they are signed.
+ */
+export function cleanXhsUrl(url: string): string {
+  const value = (url || '').trim();
+  if (!value) return value;
+
+  const parts = splitUrlParts(value);
+  if (!isXhsHost(parts.hostname)) return value;
+
+  const kept: string[] = [];
+  for (const chunk of parts.query.split('&')) {
+    if (!chunk) continue;
+    const equalsAt = chunk.indexOf('=');
+    const key = decodeQueryValue(equalsAt >= 0 ? chunk.slice(0, equalsAt) : chunk).toLowerCase();
+    const paramValue = equalsAt >= 0 ? decodeQueryValue(chunk.slice(equalsAt + 1)) : '';
+    if (key === 'exsource' && (!paramValue || paramValue.toLowerCase() === 'null')) continue;
+    kept.push(chunk);
+  }
+
+  const netloc = parts.netloc || parts.hostname;
+  const query = kept.length ? `?${kept.join('&')}` : '';
+  const fragment = parts.fragment ? `#${parts.fragment}` : '';
+  return `https://${netloc}${parts.path}${query}${fragment}`;
+}
+
+/** True when `url` is a Xiaohongshu share short link. */
+export function isXhsShortLink(url: string): boolean {
+  const host = splitUrlParts(url).hostname;
+  if (!host) return false;
+  return XHS_SHORT_HOSTS.some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+}
+
+/** First Xiaohongshu share short link inside the original share caption. */
+export function extractXhsShortLink(rawInput: string): string | null {
+  const matches = (rawInput || '').match(SHORT_LINK_SCAN_RE) || [];
+  for (const match of matches) {
+    const candidate = extractUrl(match);
+    if (candidate && isXhsShortLink(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Resolve a `redirectPath` / `source` value against the shell that carries it. */
+function absolutizeRedirect(target: string, base: ParsedUrlParts): string | null {
+  let value = (target || '').trim();
+  if (!value) return null;
+
+  const origin = base.netloc || base.hostname;
+  if (value.startsWith('//')) value = `https:${value}`;
+  else if (value.startsWith('/')) value = `https://${origin}${value}`;
+  else if (!ABSOLUTE_URL_RE.test(value)) {
+    value = BARE_HOST_RE.test(value)
+      ? `https://${value}`
+      : `https://${origin}/${value.replace(/^\/+/, '')}`;
+  }
+  return /^https?:\/\//i.test(value) ? value : null;
+}
+
+/** First non-empty value of `names` inside a shell's query string. */
+function readRedirectParam(url: string, names: readonly string[]): string {
+  const parts = splitUrlParts(url);
+  for (const chunk of parts.query.split('&')) {
+    if (!chunk) continue;
+    const equalsAt = chunk.indexOf('=');
+    const key = decodeQueryValue(equalsAt >= 0 ? chunk.slice(0, equalsAt) : chunk).toLowerCase();
+    if (!names.includes(key)) continue;
+    const value = decodeQueryValue(equalsAt >= 0 ? chunk.slice(equalsAt + 1) : '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+/**
+ * Unwrap `/login?redirectPath=<real note>` and `/404?...` shells into the note
+ * URL (max 5 hops).
+ *
+ * Needed three times: the WAF redirect itself, `parseXhsHtml` deciding whether
+ * it only saw a shell, and old clips that already stored a `/login?...` URL
+ * (re-fetching them must recover the real note). Handled shell flavours:
+ *
+ * - `/login?redirectPath=...`, `/website-login/*?redirectPath=...`
+ * - `/404/sec_<id>?redirectPath=...`
+ * - `/404?source=/404/sec_<id>?redirectPath=...` (nested, `source` hops first)
+ *
+ * Every result is TLS-upgraded and `exSource=null` is stripped, so the caller
+ * never stores an `http://` note URL or a noise param.
  */
 export function unwrapXhsRedirect(url: string): string {
-  let current = (url || '').trim();
-  for (let depth = 0; depth < 5 && current; depth += 1) {
+  const original = cleanXhsUrl((url || '').trim());
+  if (!original) return original;
+
+  let current = original;
+  // A dead-end shell (`/404?source=/404/sec_...` without `redirectPath`) has no
+  // note to recover: keep the first non-shell candidate, else the input.
+  let resolved = isLoginLandingPage(original) ? '' : original;
+
+  for (let depth = 0; depth < 5; depth += 1) {
     const parts = splitUrlParts(current);
-    if (!LOGIN_PATH_RE.test(parts.path || '')) return current;
+    const path = parts.path || '';
+    if (!LOGIN_PATH_RE.test(path) && !NOT_FOUND_PATH_RE.test(path)) break;
 
-    let target = '';
-    for (const chunk of parts.query.split('&')) {
-      if (!chunk) continue;
-      const equalsAt = chunk.indexOf('=');
-      const key = decodeQueryValue(equalsAt >= 0 ? chunk.slice(0, equalsAt) : chunk).toLowerCase();
-      if (key !== 'redirectpath' && key !== 'redirect_path') continue;
-      target = decodeQueryValue(equalsAt >= 0 ? chunk.slice(equalsAt + 1) : '').trim();
-      if (target) break;
-    }
-    if (!target) return current;
+    const rawTarget =
+      readRedirectParam(current, ['redirectpath', 'redirect_path'])
+      || readRedirectParam(current, ['source']);
+    if (!rawTarget) break;
 
-    if (target.startsWith('//')) target = `https:${target}`;
-    if (target.startsWith('/')) {
-      target = `${(parts.scheme || 'https').toLowerCase()}://${parts.netloc}${target}`;
+    const absolutized = absolutizeRedirect(rawTarget, parts);
+    if (!absolutized) break;
+
+    const next = cleanXhsUrl(absolutized);
+    if (!next || next === current) break;
+
+    current = next;
+    if (!isLoginLandingPage(next)) {
+      resolved = next;
+      break;
     }
-    if (!/^https?:\/\//i.test(target)) return current;
-    current = target;
   }
-  return current;
+  return resolved || original;
+}
+
+/** `<origin>/explore/<noteId>?<原 query>`：`xsec_token` 必须随行，否则必然 404。 */
+function buildExploreUrl(url: string, noteId: string): string {
+  const parts = splitUrlParts(url);
+  const origin = isXhsHost(parts.hostname) && parts.netloc
+    ? `https://${parts.netloc}`
+    : 'https://www.xiaohongshu.com';
+  const query = parts.query ? `?${parts.query}` : '';
+  return `${origin}/explore/${noteId}${query}`;
 }
 
 /** Extract a note id from a canonical XHS URL (path or query string). */
@@ -480,44 +631,138 @@ export function parseXhsHtml(html: string, url: string, rawInput = ''): Extracte
   return degradedXhs(url, rawInput, '未在页面中找到 window.__INITIAL_STATE__ 笔记数据');
 }
 
-/** Fetch and parse a Xiaohongshu note; never throws. */
+/** How much usable data a (possibly partial) extraction carries. */
+function richness(content: ExtractedContent | null, rawInput: string): number {
+  if (!content) return -1;
+  if (!content.partial) return 1000;
+  let score = 0;
+  if (content.image_urls.length) score += 10 + Math.min(content.image_urls.length, 5);
+  const text = String(content.content_text ?? '').trim();
+  const raw = String(rawInput ?? '').trim();
+  if (text && text !== raw && text !== String(content.url ?? '').trim()) score += 5;
+  if (String(content.author ?? '').trim()) score += 1;
+  return score;
+}
+
+/**
+ * Pick the `url` a degraded clip should store.
+ *
+ * A share short link is the only input that still self-heals on retry, so it is
+ * never replaced by an unverified redirect target. Any other input degrades to
+ * the unwrapped (TLS, noise-free) note URL — never the `/login` / `/404` shell.
+ */
+function resolveDegradedUrl(inputUrl: string, requested: string): string {
+  const original = (inputUrl || '').trim();
+  if (isXhsShortLink(original)) return original;
+
+  const candidate = requested || original;
+  if (!candidate) return original;
+  // `requested` is already unwrapped, but a dead-end shell can survive: never
+  // store `/login` or `/404` as a clip URL.
+  if (isLoginLandingPage(candidate)) return XHS_REFERER;
+  return candidate;
+}
+
+/**
+ * Fetch and parse a Xiaohongshu note; never throws.
+ *
+ * Self-healing ladder (each rung is skipped when the exact same URL + header
+ * profile was already requested, since the WAF answer would be identical):
+ *
+ * 1. the request itself — `requested` is already unwrapped/TLS-upgraded;
+ * 2. the note URL revealed by a `/login` / `/404` redirect at network time;
+ * 3. `/explore/<noteId>?<原始 query>` with an Android Chrome profile;
+ * 4. the original short link recovered from `rawInput` (old clips whose
+ *    `clip.url` was rewritten to a wrong note id still heal on “重新抓取”).
+ */
 export async function extractXhs(url: string, rawInput = ''): Promise<ExtractedContent> {
-  const errors: string[] = [];
+  const inputUrl = (url || '').trim();
   // A previously polluted clip may still hold `/login?redirectPath=<note>`.
-  const requested = unwrapXhsRedirect(url);
+  const requested = unwrapXhsRedirect(inputUrl) || inputUrl;
 
-  try {
-    let page = await fetchHtml(requested, XHS_HEADERS);
-    let finalUrl = (page.finalUrl || requested).trim() || requested;
-    let noteUrl = unwrapXhsRedirect(finalUrl);
+  const errors: string[] = [];
+  const tried = new Set<string>();
+  const partials: ExtractedContent[] = [];
+  let lastNoteUrl = '';
 
-    if (noteUrl !== finalUrl) {
-      // The WAF bounced us into the login shell; the real note survived in
-      // `redirectPath`, so retry once with the unwrapped URL.
-      try {
-        page = await fetchHtml(noteUrl, XHS_HEADERS);
-        finalUrl = (page.finalUrl || noteUrl).trim() || noteUrl;
-        noteUrl = unwrapXhsRedirect(finalUrl);
-      } catch (error) {
-        errors.push(errorLabel(error));
-      }
+  const attempt = async (
+    target: string,
+    headers: Record<string, string>,
+  ): Promise<ExtractedContent | null> => {
+    if (!target) return null;
+    const key = `${target}\n${headers['User-Agent'] || ''}\n${headers['Accept-Encoding'] || ''}`;
+    if (tried.has(key)) return null;
+    tried.add(key);
+
+    try {
+      const page = await fetchHtml(target, headers);
+      const finalUrl = (page.finalUrl || target).trim() || target;
+      const noteUrl = unwrapXhsRedirect(finalUrl) || finalUrl;
+      if (!isLoginLandingPage(noteUrl)) lastNoteUrl = noteUrl;
+
+      const content = parseXhsHtml(page.html, noteUrl, rawInput);
+      if (!content.partial) return content;
+      // Keep every partial: the richest one is returned if no rung succeeds.
+      partials.push(content);
+      return null;
+    } catch (error) {
+      errors.push(errorLabel(error));
+      return null;
     }
+  };
 
-    if (isLoginLandingPage(finalUrl)) {
-      return degradedXhs(noteUrl, rawInput, XHS_LOGIN_BLOCK_MESSAGE);
-    }
+  // 1) Fresh stateless request (no cookies, identity encoding, navigation headers).
+  let content = await attempt(requested, XHS_HEADERS);
 
-    const content = parseXhsHtml(page.html, noteUrl, rawInput);
-    if (errors.length && content.partial) {
-      return {
-        ...content,
-        error_message: [errors.join('；'), content.error_message ?? ''].filter(Boolean).join('；'),
-      };
-    }
-    return content;
-  } catch (error) {
-    errors.push(errorLabel(error));
+  // 2) The redirect chain only revealed the canonical note URL at network time.
+  if (!content && lastNoteUrl && lastNoteUrl !== requested) {
+    content = await attempt(lastNoteUrl, XHS_HEADERS);
   }
 
-  return degradedXhs(requested || url, rawInput, errors.join('；') || '小红书内容提取失败');
+  // 3) The canonical desktop page is walled, but the note id is known.
+  if (!content) {
+    const exploreSource = lastNoteUrl || requested || inputUrl;
+    const noteId =
+      extractNoteId(exploreSource) || extractNoteId(requested) || extractNoteId(inputUrl);
+    if (noteId) content = await attempt(buildExploreUrl(exploreSource, noteId), XHS_EXPLORE_HEADERS);
+  }
+
+  // 4) Old clips rewrote `clip.url` to a wrong note id; the share caption still
+  //    holds the original short link, so walk it again (and its redirect).
+  if (!content) {
+    const shortLink = extractXhsShortLink(rawInput);
+    if (shortLink && shortLink !== requested) {
+      content = await attempt(shortLink, XHS_HEADERS);
+      if (!content && lastNoteUrl && lastNoteUrl !== shortLink) {
+        content = await attempt(lastNoteUrl, XHS_HEADERS);
+      }
+    }
+  }
+
+  if (content) return content;
+
+  const fallbackUrl = resolveDegradedUrl(inputUrl, requested);
+
+  let bestPartial: ExtractedContent | null = null;
+  for (const partial of partials) {
+    if (richness(partial, rawInput) > richness(bestPartial, rawInput)) bestPartial = partial;
+  }
+
+  if (bestPartial) {
+    return {
+      ...bestPartial,
+      url: isXhsShortLink(inputUrl)
+        ? inputUrl
+        : (isLoginLandingPage(bestPartial.url) || !bestPartial.url ? fallbackUrl : bestPartial.url),
+      error_message:
+        [...(errors.length ? [errors.join('；')] : []), bestPartial.error_message ?? ''].filter(Boolean).join('；')
+        || XHS_LOGIN_BLOCK_MESSAGE,
+    };
+  }
+
+  return degradedXhs(
+    fallbackUrl,
+    rawInput,
+    errors.join('；') || XHS_LOGIN_BLOCK_MESSAGE,
+  );
 }

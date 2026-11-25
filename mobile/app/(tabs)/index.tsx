@@ -299,7 +299,11 @@ export default function ReviewTodayScreen() {
     if (!link || capturing) return;
     setCapturing(true);
     try {
-      const result = await localRepo.createClip({ input: link }, localAiConfig);
+      const result = await localRepo.createClip({ input: link }, localAiConfig, {
+        // Let the home NUC finish what the phone's IP cannot reach.
+        apiConfig: config,
+        syncEnabled: settings.syncEnabled,
+      });
       show(result.deduplicated ? '已在收藏目录' : '已收进书房', result.deduplicated ? 'info' : 'success');
       await dismiss(link);
     } catch (err) {

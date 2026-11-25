@@ -44,9 +44,8 @@ function ListSeparator() {
 }
 
 export default function LibraryScreen() {
-  const { localAiConfig, settings, ready } = useSettings();
-  const { syncNow } = useSync();
-  const { show } = useToast();
+  const { localAiConfig, settings, config, ready } = useSettings();
+  const { syncNow } = useSync();  const { show } = useToast();
   const router = useRouter();
 
   const [query, setQuery] = useState('');
@@ -222,6 +221,8 @@ export default function LibraryScreen() {
           tags: payload.tags.length ? payload.tags : undefined,
         },
         localAiConfig,
+        // Rescue blocked local extractions (XHS login wall) through the NUC.
+        { apiConfig: config, syncEnabled: settings.syncEnabled },
       );
       show(result.deduplicated ? '已在收藏目录' : '已收进书房，正在整理', result.deduplicated ? 'info' : 'success');
       setQuickAddVisible(false);
