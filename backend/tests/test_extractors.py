@@ -1027,3 +1027,31 @@ async def test_extract_content_never_raises_on_unexpected_failure() -> None:
     assert result.partial is True
     assert result.error_message is not None
     assert result.content_text == "原始文案"
+
+
+async def test_xhs_login_redirect_with_custom_og_still_detected_as_shell() -> None:
+    canonical = f"https://www.xiaohongshu.com/discovery/item/{NOTE_ID}?xsec_token=TOK"
+    login_url = "https://www.xiaohongshu.com/login?" + urlencode({"redirectPath": canonical})
+    login_html = (
+        '<html><head><meta property="og:title" content="请登录后继续浏览">'
+        '<meta property="og:image" content="https://picasso-static.xiaohongshu.com/logo.png">'
+        "</head><body>登录页</body></html>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "xhslink.cn":
+            return httpx.Response(302, headers={"location": login_url})
+        return httpx.Response(200, text=login_html, headers={"content-type": "text/html"})
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(
+            "http://xhslink.cn/o/AbuixShqJX6",
+            raw_input="真实笔记标题 http://xhslink.cn/o/AbuixShqJX6",
+            client=client,
+        )
+
+    assert result.partial is True
+    assert result.url == canonical
+    assert result.title == "真实笔记标题"
+    assert result.image_urls == []
+    assert "登录" in (result.error_message or "")

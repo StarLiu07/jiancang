@@ -185,17 +185,17 @@ class XExtractor:
             return self._degraded(url, raw_input, f"{type(exc).__name__}: {exc}")
 
         if not isinstance(payload, dict):
-            return self._degraded(url, raw_input, "fxtwitter 返回了非预期格式")
+            return self._degraded(target_url, raw_input, "fxtwitter 返回了非预期格式")
         code = payload.get("code")
         if code not in (None, 200):
             message = payload.get("message") or f"fxtwitter code={code}"
-            return self._degraded(url, raw_input, str(message))
+            return self._degraded(target_url, raw_input, str(message))
 
         tweet = payload.get("tweet")
         if not isinstance(tweet, dict):
-            return self._degraded(url, raw_input, "fxtwitter 未返回推文内容")
+            return self._degraded(target_url, raw_input, "fxtwitter 未返回推文内容")
 
-        return self._build(url, tweet, raw_input)
+        return self._build(target_url, tweet, raw_input)
 
     async def _resolve_url(self, http: httpx.AsyncClient, url: str) -> str:
         """Follow redirects on a short link and return the final URL (best effort)."""

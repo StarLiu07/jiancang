@@ -401,8 +401,10 @@ class XiaohongshuExtractor:
                 headers = dict(XHS_HEADERS)
                 headers["User-Agent"] = self.user_agent
                 response = await http.get(url, headers=headers, follow_redirects=True)
-                # Never persist the login shell over the user's original link.
-                final_url = unwrap_xhs_redirect(str(response.url) or url)
+                # Keep the raw post-redirect URL for shell detection, but never persist the
+                # login shell over the user's original link.
+                raw_final_url = str(response.url) or url
+                final_url = unwrap_xhs_redirect(raw_final_url)
                 response.raise_for_status()
                 html = response.text
 
@@ -417,7 +419,7 @@ class XiaohongshuExtractor:
                 if mcp_content is not None:
                     return mcp_content
 
-                if is_xhs_shell_page(final_url, html):
+                if is_xhs_shell_page(raw_final_url, html):
                     errors.append("小红书返回了登录/风控壳页，未能获取笔记正文")
                 else:
                     og = self._og_fallback(html)
