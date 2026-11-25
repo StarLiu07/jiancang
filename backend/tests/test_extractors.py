@@ -15,13 +15,16 @@ from app.services.extractors.generic import GenericWebExtractor
 from app.services.extractors.wechat import WeChatExtractor
 from app.services.extractors.x import FX_API_URL, XExtractor, parse_status_url
 from app.services.extractors.xhs import (
+    MOBILE_USER_AGENT,
     XHS_HEADERS,
     XiaohongshuExtractor,
     _note_body_text,
     _note_images,
+    build_explore_url,
     extract_initial_state,
     extract_note_id,
     find_note,
+    recover_short_links,
     unwrap_xhs_redirect,
 )
 
@@ -1051,7 +1054,204 @@ async def test_xhs_login_redirect_with_custom_og_still_detected_as_shell() -> No
         )
 
     assert result.partial is True
-    assert result.url == canonical
+    assert result.url == "http://xhslink.cn/o/AbuixShqJX6"
+    assert "/login" not in result.url
     assert result.title == "真实笔记标题"
     assert result.image_urls == []
     assert "登录" in (result.error_message or "")
+
+
+# ------------------------------------------- Xiaohongshu risk-control fallbacks
+
+NOTE_QUERY = "xsec_token=TOK&xsec_source=pc_feed"
+NOTE_URL = f"https://www.xiaohongshu.com/explore/{NOTE_ID}?{NOTE_QUERY}"
+
+
+def test_unwrap_xhs_redirect_handles_nested_404_shell() -> None:
+    nested = (
+        "/404?source=/404/sec_4f0a1b?redirectPath="
+        f"http://www.xiaohongshu.com/explore/{NOTE_ID}?{NOTE_QUERY}&exSource=null"
+    )
+
+    # http -> https, exSource=null dropped, xsec_* params kept, nesting resolved.
+    assert unwrap_xhs_redirect(nested) == NOTE_URL
+    assert unwrap_xhs_redirect(f"https://www.xiaohongshu.com{nested}") == NOTE_URL
+    # the same shell one level deeper (``/404/sec_...?redirectPath=...``)
+    assert (
+        unwrap_xhs_redirect(
+            f"https://www.xiaohongshu.com/404/sec_4f0a1b?redirectPath={NOTE_URL}&exSource=null"
+        )
+        == NOTE_URL
+    )
+    # a note URL is never rewritten and keeps every valid parameter
+    assert unwrap_xhs_redirect(NOTE_URL) == NOTE_URL
+
+
+def test_unwrap_xhs_redirect_keeps_xsec_params_outside_redirect_path() -> None:
+    # xhs sometimes puts the token next to the shell's redirectPath instead of inside it.
+    shell = (
+        "https://www.xiaohongshu.com/login?redirectPath="
+        f"http://www.xiaohongshu.com/explore/{NOTE_ID}&xsec_token=TOK&xsec_source=pc_feed"
+    )
+
+    assert unwrap_xhs_redirect(shell) == NOTE_URL
+
+
+def test_recover_short_links_and_build_explore_url() -> None:
+    caption = (
+        "87 【笔记标题】 复制本条信息，打开小红书 http://xhslink.cn/o/AbuixShqJX6，看看 "
+        "https://xhslink.com/a/b1c2d3 和 https://example.com/nope"
+    )
+
+    assert recover_short_links(caption) == [
+        "http://xhslink.cn/o/AbuixShqJX6",
+        "https://xhslink.com/a/b1c2d3",
+    ]
+    assert recover_short_links("没有链接") == []
+    assert build_explore_url(NOTE_ID, f"?{NOTE_QUERY}&exSource=null") == NOTE_URL
+    assert build_explore_url(NOTE_ID) == f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+    assert build_explore_url("") == ""
+
+
+async def test_xhs_login_shell_recovers_via_explore_with_mobile_user_agent() -> None:
+    requested: list[tuple[str, str]] = []
+    discover = f"https://www.xiaohongshu.com/discovery/item/{NOTE_ID}?xsec_token=TOK"
+    explore = f"https://www.xiaohongshu.com/explore/{NOTE_ID}?xsec_token=TOK"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        user_agent = request.headers.get("user-agent", "")
+        requested.append((str(request.url), user_agent))
+        if str(request.url) == explore and user_agent == MOBILE_USER_AGENT:
+            return httpx.Response(200, text=XHS_HTML, headers={"content-type": "text/html"})
+        return httpx.Response(
+            200, text=XHS_LOGIN_SHELL_HTML, headers={"content-type": "text/html"}
+        )
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(
+            discover, raw_input="笔记分享", client=client
+        )
+
+    assert result.partial is False
+    assert result.title == "笔记标题"
+    assert result.url == explore
+    # exactly the two strategies, no URL + UA pair fetched twice
+    assert requested == [(discover, XHS_HEADERS["User-Agent"]), (explore, MOBILE_USER_AGENT)]
+
+
+async def test_xhs_recovers_short_link_from_raw_input_when_clip_url_was_rewritten() -> None:
+    short_link = "https://xhslink.cn/o/AbuixShqJX6"
+    canonical = f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+    rewritten = f"{canonical}?xsec_token=STALE"
+    requested: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((str(request.url), request.headers.get("user-agent", "")))
+        if request.url.host == "xhslink.cn":
+            return httpx.Response(302, headers={"location": canonical})
+        if str(request.url) == canonical:
+            return httpx.Response(200, text=XHS_HTML, headers={"content-type": "text/html"})
+        return httpx.Response(404, text="note gone")
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(
+            rewritten, raw_input=f"旧剪藏 {short_link}", client=client
+        )
+
+    assert result.partial is False
+    assert result.title == "笔记标题"
+    assert result.url == canonical
+    assert short_link in [url for url, _ in requested]
+    assert all("/login" not in url and "/404" not in url for url, _ in requested)
+    # no URL + UA pair is fetched twice while walking the ladder
+    assert len(requested) == len(set(requested))
+
+
+async def test_xhs_degrade_keeps_original_short_link() -> None:
+    short_link = "http://xhslink.cn/o/AbuixShqJX6"
+    requested: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((str(request.url), request.headers.get("user-agent", "")))
+        return httpx.Response(200, text=XHS_LOGIN_SHELL_HTML)
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(
+            short_link, raw_input=f"真实笔记标题 {short_link}", client=client
+        )
+
+    assert result.partial is True
+    # A later retry (or the phone) needs the link the user actually shared.
+    assert result.url == short_link
+    assert result.title == "真实笔记标题"
+    assert "/login" not in result.url and "/404" not in result.url
+    assert len(requested) == len(set(requested))
+
+
+async def test_xhs_degrade_unwraps_shell_input_to_https_note_url() -> None:
+    polluted = (
+        "https://www.xiaohongshu.com/404?source=/404/sec_4f0a1b?redirectPath="
+        f"http://www.xiaohongshu.com/explore/{NOTE_ID}?xsec_token=TOK&exSource=null"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=XHS_RISK_HTML)
+
+    async with make_client(handler) as client:
+        result = await XiaohongshuExtractor().extract(polluted, raw_input="旧剪藏", client=client)
+
+    assert result.partial is True
+    assert result.error_message
+    assert result.url == f"https://www.xiaohongshu.com/explore/{NOTE_ID}?xsec_token=TOK"
+    assert "/login" not in result.url and "/404" not in result.url
+    assert "exSource" not in result.url
+
+
+async def test_xhs_requests_use_a_clean_cookie_jar_and_restore_the_client() -> None:
+    seen_cookies: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_cookies.append(request.headers.get("cookie"))
+        return httpx.Response(
+            200, text=XHS_HTML, headers={"set-cookie": "waf=1; Path=/"}
+        )
+
+    url = f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+    async with make_client(handler) as client:
+        client.cookies.set("stale", "1")
+        result = await XiaohongshuExtractor().extract(url, raw_input="文案", client=client)
+        # the shared client keeps its own jar: no WAF cookie, no dropped caller state
+        assert dict(client.cookies) == {"stale": "1"}
+
+    assert result.partial is False
+    assert seen_cookies == [None]
+
+
+async def test_xhs_request_sends_browser_navigation_headers() -> None:
+    captured: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        for key in (
+            "sec-fetch-dest",
+            "sec-fetch-mode",
+            "sec-fetch-site",
+            "sec-fetch-user",
+            "upgrade-insecure-requests",
+            "cache-control",
+        ):
+            captured[key] = request.headers.get(key)
+        return httpx.Response(200, text=XHS_HTML)
+
+    async with make_client(handler) as client:
+        await XiaohongshuExtractor().extract(
+            f"https://www.xiaohongshu.com/explore/{NOTE_ID}", client=client
+        )
+
+    assert captured == {
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+        "upgrade-insecure-requests": "1",
+        "cache-control": "no-cache",
+    }

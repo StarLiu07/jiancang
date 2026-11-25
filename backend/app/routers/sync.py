@@ -5,7 +5,9 @@
 * ``PUT  /api/sync/media/{id}`` - raw image bytes for a media row
 
 The NUC backfills missing AI summaries in the background: clips queued by the
-push handler are enriched after the response is sent.
+push handler are enriched after the response is sent. Clips the phone could not
+scrape itself (platform risk control) are queued for a server-side re-extraction
+instead, which also runs after the response is sent.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from app.models import (
     SyncPushResponse,
 )
 from app.routers import get_db, get_settings
-from app.services.ingest import enrich_existing_clip
+from app.services.ingest import enrich_existing_clip, process_clip
 from app.services.sync import (
     SyncClipMissingError,
     SyncMediaTooLargeError,
@@ -46,8 +48,10 @@ def push_sync(
     db: DbDep,
     settings: SettingsDep,
 ) -> SyncPushResponse:
-    """Merge a batch of client changes and queue server-side AI backfills."""
+    """Merge a batch of client changes and queue server-side backfills."""
     result = apply_push(db, settings, payload)
+    for clip_id in result.queued_extract_ids:
+        background_tasks.add_task(process_clip, clip_id, db, settings)
     for clip_id in result.queued_ai_ids:
         background_tasks.add_task(enrich_existing_clip, clip_id, db, settings)
     return result

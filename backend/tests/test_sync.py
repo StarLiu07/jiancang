@@ -421,6 +421,157 @@ def test_ai_status_downgrade_is_allowed_when_server_never_finished(
 
 
 # ---------------------------------------------------------------------------
+# server-side re-extraction of clips the phone could not scrape
+# ---------------------------------------------------------------------------
+
+
+def test_push_partial_placeholder_clip_queues_server_extraction(
+    client_for: ClientFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, db = client_for(
+        llm_base_url="https://llm.example.com/v1", llm_api_key="k"
+    )
+    extracted: list[str] = []
+
+    async def fake_process_clip(clip_id: str, db: Database, settings: Settings) -> None:
+        extracted.append(clip_id)
+
+    async def never_enriched(*args: object, **kwargs: object) -> None:
+        raise AssertionError("an extract-queued clip must not be queued for AI too")
+
+    monkeypatch.setattr("app.routers.sync.process_clip", fake_process_clip)
+    monkeypatch.setattr("app.services.ingest.enrich_clip", never_enriched)
+
+    raw_input = "87 【某笔记】 复制本条信息，打开小红书 https://xhslink.com/a/b1c2d3"
+    pushed = push(
+        client,
+        clip_payload(
+            id="xhs-blocked",
+            raw_input=raw_input,
+            url="https://xhslink.com/a/b1c2d3",
+            status="partial",
+            content_markdown=raw_input,  # the mobile fallback: share caption only
+            content_text=raw_input,
+            error_message="小红书风控拦截",
+        ),
+    )
+
+    assert pushed["queued_extract_ids"] == ["xhs-blocked"]
+    assert pushed["queued_ai_ids"] == []
+    # TestClient runs BackgroundTasks synchronously: the NUC re-scrape was scheduled
+    assert extracted == ["xhs-blocked"]
+    stored = db.get_clip("xhs-blocked")
+    assert stored["url"] == "https://xhslink.com/a/b1c2d3"
+    assert stored["status"] == "partial"
+
+
+def test_push_user_filled_partial_body_is_not_re_extracted(
+    client_for: ClientFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, db = client_for(
+        llm_base_url="https://llm.example.com/v1", llm_api_key="k"
+    )
+    extracted: list[str] = []
+
+    async def fake_process_clip(clip_id: str, db: Database, settings: Settings) -> None:
+        extracted.append(clip_id)
+
+    async def fake_enrich(
+        title: str,
+        content_text: str,
+        existing_tags: list[str],
+        settings: Settings,
+        client: object = None,
+    ) -> AIEnrichment:
+        return AIEnrichment(summary="NUC 摘要", key_points=["要点"], tags=[])
+
+    monkeypatch.setattr("app.routers.sync.process_clip", fake_process_clip)
+    monkeypatch.setattr("app.services.ingest.enrich_clip", fake_enrich)
+
+    raw_input = "分享链接 https://xhslink.com/a/b1c2d3"
+    pushed = push(
+        client,
+        clip_payload(
+            id="manual",
+            raw_input=raw_input,
+            url="https://xhslink.com/a/b1c2d3",
+            status="partial",
+            content_markdown="用户手动补全的正文",
+            content_text="用户手动补全的正文",
+        ),
+    )
+
+    # a body the user wrote is never treated as "missing": no re-scrape
+    assert pushed["queued_extract_ids"] == []
+    assert extracted == []
+    stored = db.get_clip("manual")
+    assert stored["content_markdown"] == "用户手动补全的正文"
+    # it is still eligible for the (cheap) AI backfill
+    assert pushed["queued_ai_ids"] == ["manual"]
+    assert stored["ai_status"] == "done"
+    assert stored["summary"] == "NUC 摘要"
+
+
+def test_push_never_downgrades_a_ready_server_body(
+    client_for: ClientFor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, db = client_for(
+        llm_base_url="https://llm.example.com/v1", llm_api_key="k"
+    )
+
+    async def never_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a complete server clip must not be touched")
+
+    monkeypatch.setattr("app.routers.sync.process_clip", never_called)
+    monkeypatch.setattr("app.services.ingest.enrich_clip", never_called)
+
+    # the NUC already scraped this note and finished the AI pass
+    row = db.create_clip(
+        raw_input="https://xhslink.com/a/b1c2d3",
+        url="https://xhslink.com/a/b1c2d3",
+        normalized_url="https://xhslink.com/a/b1c2d3",
+        status="ready",
+        ai_status="done",
+        title="服务端标题",
+        content_markdown="# 服务端标题\n\n服务端抓到的完整正文",
+        content_text="服务端抓到的完整正文",
+        summary="服务端摘要",
+        key_points=["服务端要点"],
+        now=NOW,
+    )
+    clip_id = str(row["id"])
+    caption = "87 【某笔记】 复制本条信息，打开小红书 https://xhslink.com/a/b1c2d3"
+
+    pushed = push(
+        client,
+        clip_payload(
+            id=clip_id,
+            raw_input=caption,
+            url="https://xhslink.com/a/b1c2d3",
+            status="partial",
+            ai_status="pending",
+            title="服务端标题",
+            content_markdown=caption,
+            content_text=caption,
+            summary="",
+            key_points=[],
+            error_message="小红书风控拦截",
+            updated_at="2025-05-02T08:00:00+00:00",
+        ),
+    )
+
+    assert pushed["queued_extract_ids"] == []
+    assert pushed["queued_ai_ids"] == []
+    stored = db.get_clip(clip_id)
+    assert "服务端抓到的完整正文" in stored["content_markdown"]
+    assert caption not in stored["content_markdown"]
+    assert stored["status"] == "ready"
+    assert stored["error_message"] is None
+    assert stored["ai_status"] == "done"
+    assert stored["summary"] == "服务端摘要"
+
+
+# ---------------------------------------------------------------------------
 # tombstones
 # ---------------------------------------------------------------------------
 
