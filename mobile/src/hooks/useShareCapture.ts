@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 
 import { pickErrorMessage } from '../api/client';
 import { useToast } from '../components/Toast';
+import type { RemoteExtractFallback } from '../local/ingest';
 import { localRepo } from '../local/repository';
 import { useSettings } from '../store/settings';
 import { buildSharePayload } from '../utils/url';
@@ -19,7 +20,7 @@ import { buildSharePayload } from '../utils/url';
  * and this hook stays inert instead of crashing.
  */
 export function useShareCapture(): void {
-  const { localAiConfig, ready } = useSettings();
+  const { localAiConfig, config, settings, ready } = useSettings();
   const { show } = useToast();
   const { isReady, hasShareIntent, shareIntent, resetShareIntent } = useShareIntent({
     scheme: 'jiancang',
@@ -29,8 +30,10 @@ export function useShareCapture(): void {
   const busyRef = useRef(false);
   const submittingRef = useRef<string | null>(null);
   const aiConfigRef = useRef(localAiConfig);
+  const remoteFallbackRef = useRef<RemoteExtractFallback | null>(null);
 
   aiConfigRef.current = localAiConfig;
+  remoteFallbackRef.current = { apiConfig: config, syncEnabled: settings.syncEnabled };
 
   useEffect(() => {
     if (!ready || !isReady || !hasShareIntent) return;
@@ -50,7 +53,12 @@ export function useShareCapture(): void {
 
     const submit = async () => {
       try {
-        const result = await localRepo.createClip({ input: payload }, aiConfigRef.current);
+        const result = await localRepo.createClip(
+          { input: payload },
+          aiConfigRef.current,
+          // A share arriving on 5G may be blocked locally but readable from home.
+          remoteFallbackRef.current ?? undefined,
+        );
         show(result.deduplicated ? '已在收藏库' : '已剪藏', result.deduplicated ? 'info' : 'success');
       } catch (error) {
         show(`提交失败：${pickErrorMessage(error)}`, 'error');

@@ -15,8 +15,9 @@
  * time, exactly like `media.ts` does for `expo-file-system`.
  */
 
-import type { ClipDetail, ClipStatus, LocalAiConfig, Platform } from '../types';
+import type { ApiConfig, ClipDetail, ClipStatus, LocalAiConfig, Platform } from '../types';
 import type { ClipUpdateFields, MediaInput } from './db';
+import { api } from '../api/client';
 import { enrichClipLocally, isLocalAiConfigured } from './ai';
 import type { LocalAiEnrichment } from './ai';
 import { extractContent } from './extractors';
@@ -33,6 +34,79 @@ export const INGEST_RESUME_CONCURRENCY = 2;
 export const INGEST_MAX_KEY_POINTS = 5;
 
 const MAX_ERROR_MESSAGE_CHARS = 500;
+
+/**
+ * NUC-side stateless extraction (rescue path only).
+ *
+ * Xiaohongshu throttles phone / 5G / proxy egress IPs far more aggressively
+ * than a residential NUC, so a partial local extract may still be completed by
+ * asking the home server. Everything here is optional: with no `syncEnabled`
+ * settings or an empty `baseUrl` the pipeline stays 100% offline.
+ */
+export interface RemoteExtractFallback {
+  apiConfig: ApiConfig;
+  syncEnabled: boolean;
+}
+
+/**
+ * Whether the NUC rescue is worth a network round-trip.
+ *
+ * Only a `partial` local extraction is rescued — a good local clip is never
+ * uploaded, and the NUC is skipped entirely when sync is off / not configured.
+ */
+export function shouldTryRemoteExtractFallback(
+  extracted: ExtractedContent,
+  fallback?: RemoteExtractFallback | null,
+): boolean {
+  if (!extracted || extracted.partial !== true) return false;
+  if (!fallback || fallback.syncEnabled !== true) return false;
+  return String(fallback.apiConfig?.baseUrl ?? '').trim().length > 0;
+}
+
+function normalizedBody(content: ExtractedContent): string {
+  return String(content.content_text ?? '').trim();
+}
+
+/**
+ * True when `remote` has more to show than `local`: more images, or a real body
+ * — one that is not just the share caption / URL a degraded local extract
+ * echoed back.
+ */
+function remoteIsRicher(local: ExtractedContent, remote: ExtractedContent): boolean {
+  const localImages = Array.isArray(local.image_urls) ? local.image_urls.length : 0;
+  const remoteImages = Array.isArray(remote.image_urls) ? remote.image_urls.length : 0;
+  if (remoteImages > localImages) return true;
+
+  const remoteBody = normalizedBody(remote);
+  if (!remoteBody) return false;
+
+  const placeholders = new Set(
+    [local.content_text, local.content_markdown, local.url, remote.url]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean),
+  );
+  if (placeholders.has(remoteBody)) return false;
+
+  const localBody = normalizedBody(local);
+  return placeholders.has(localBody) || localBody.length < remoteBody.length;
+}
+
+/**
+ * Pick the better of the local and the NUC extraction.
+ *
+ * A complete remote result always wins; two partial results are compared by
+ * content richness so the user's already-extracted local body is never replaced
+ * by an emptier NUC answer.
+ */
+export function pickBetterExtraction(
+  local: ExtractedContent,
+  remote: ExtractedContent | null | undefined,
+): ExtractedContent {
+  if (!remote) return local;
+  if (!remote.partial) return remote;
+  if (!local.partial) return local;
+  return remoteIsRicher(local, remote) ? remote : local;
+}
 
 // ---------------------------------------------------------------------------
 // change bus (re-exported by `repository.ts` as the single local event bus)
@@ -390,6 +464,7 @@ async function runIngest(
   clipId: string,
   aiConfig: LocalAiConfig,
   onChange?: () => void,
+  remoteFallback?: RemoteExtractFallback,
 ): Promise<void> {
   const db = localDb();
   const emit = createEmitter(onChange);
@@ -406,8 +481,16 @@ async function runIngest(
     if (!started) return;
     emit();
 
-    const extracted = await extractContent(started.url, started.raw_input);
+    let extracted = await extractContent(started.url, started.raw_input);
     if (await userTookOver(db, clipId)) return;
+
+    // Local extraction was blocked (XHS login wall / JS-only page): let the
+    // home NUC try. It runs before media/AI so the rescue can win outright.
+    if (shouldTryRemoteExtractFallback(extracted, remoteFallback) && remoteFallback) {
+      const remote = await extractRemotely(remoteFallback, started);
+      extracted = pickBetterExtraction(extracted, remote);
+      if (await userTookOver(db, clipId)) return;
+    }
 
     const fields = buildIngestFields(extracted, {
       url: started.url,
@@ -432,16 +515,40 @@ async function runIngest(
 }
 
 /**
+ * Ask the NUC for a stateless extraction, best effort.
+ *
+ * Any network / offline / backend error is swallowed: the local (partial)
+ * result must survive untouched — offline is the default, not a failure.
+ */
+async function extractRemotely(
+  fallback: RemoteExtractFallback,
+  clip: ClipDetail,
+): Promise<ExtractedContent | null> {
+  try {
+    return await api.extractRemote(fallback.apiConfig, {
+      url: clip.url,
+      raw_input: clip.raw_input,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run the full local ingestion pipeline for `clipId`.
  *
  * Concurrent calls for the same clip share one in-flight run (so a double tap
  * or a resume sweep cannot process a clip twice). Resolves — never rejects —
  * and every persisted step notifies `subscribeLocalChanges` plus `onChange`.
+ *
+ * `remoteFallback` is optional: pass it to let the home NUC rescue a partial
+ * local extraction (see `shouldTryRemoteExtractFallback`).
  */
 export function processClipLocally(
   clipId: string,
   aiConfig: LocalAiConfig,
   onChange?: () => void,
+  remoteFallback?: RemoteExtractFallback,
 ): Promise<void> {
   const id = String(clipId ?? '').trim();
   if (!id) return Promise.resolve();
@@ -449,7 +556,7 @@ export function processClipLocally(
   const running = inFlight.get(id);
   if (running) return running;
 
-  const task = runIngest(id, aiConfig, onChange)
+  const task = runIngest(id, aiConfig, onChange, remoteFallback)
     .catch(() => {
       // Final safety net: runIngest already degrades to `failed`.
     })
@@ -469,6 +576,7 @@ export function processClipLocally(
 export async function resumePendingClips(
   aiConfig: LocalAiConfig,
   onChange?: () => void,
+  remoteFallback?: RemoteExtractFallback,
 ): Promise<number> {
   let ids: string[] = [];
   try {
@@ -479,7 +587,7 @@ export async function resumePendingClips(
   if (!ids.length) return 0;
 
   await runWithConcurrency(ids, INGEST_RESUME_CONCURRENCY, async (id) => {
-    await processClipLocally(id, aiConfig, onChange);
+    await processClipLocally(id, aiConfig, onChange, remoteFallback);
   });
   return ids.length;
 }

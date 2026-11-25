@@ -37,12 +37,13 @@ import {
   processClipLocally,
   resumePendingClips,
 } from './ingest';
+import type { RemoteExtractFallback } from './ingest';
 import { deleteLocalMediaFile } from './media';
 import { normalizeTags } from './reviewLogic';
 import { detectPlatform, extractUrl, normalizeUrl } from './urlUtils';
 
 export { notifyLocalChange, subscribeLocalChanges } from './ingest';
-export type { LocalChangeListener } from './ingest';
+export type { LocalChangeListener, RemoteExtractFallback } from './ingest';
 
 /** Error raised by the local repository (mirrors `ApiError` shape loosely). */
 export class LocalRepositoryError extends Error {
@@ -199,10 +200,14 @@ function localChat(): ChatModule {
   return cachedChat;
 }
 
-function triggerIngest(clipId: string, aiConfig: LocalAiConfig): void {
+function triggerIngest(
+  clipId: string,
+  aiConfig: LocalAiConfig,
+  remoteFallback?: RemoteExtractFallback,
+): void {
   try {
     // `processClipLocally` never rejects; the extra catch keeps the caller safe.
-    void processClipLocally(clipId, aiConfig).catch(() => undefined);
+    void processClipLocally(clipId, aiConfig, undefined, remoteFallback).catch(() => undefined);
   } catch {
     // Background work must never block the mutation the user asked for.
   }
@@ -234,10 +239,12 @@ export const localRepo = {
   /**
    * Persist a clip instantly (status `pending`) and ingest it in the background.
    * Normalized-URL duplicates return the existing clip without re-ingesting.
+   * `remoteFallback` lets the home NUC rescue a blocked local extraction.
    */
   async createClip(
     input: ClipCreateInput,
     aiConfig: LocalAiConfig,
+    remoteFallback?: RemoteExtractFallback,
   ): Promise<ClipCreateResponse> {
     const rawInput = String(input?.input ?? '').trim();
     const url = (extractUrl(rawInput) ?? '').trim();
@@ -262,7 +269,7 @@ export const localRepo = {
       tags: input?.tags ?? [],
     });
     notifyLocalChange();
-    triggerIngest(created.id, aiConfig);
+    triggerIngest(created.id, aiConfig, remoteFallback);
 
     return { clip: toClipSummary(created), deduplicated: false };
   },
@@ -307,7 +314,11 @@ export const localRepo = {
   },
 
   /** Reset a clip and re-run ingestion in the background. */
-  async retryClip(id: string, aiConfig: LocalAiConfig): Promise<ClipDetail> {
+  async retryClip(
+    id: string,
+    aiConfig: LocalAiConfig,
+    remoteFallback?: RemoteExtractFallback,
+  ): Promise<ClipDetail> {
     const clipId = normalizeClipId(id);
     const db = localDb();
     const current = await db.getClipDetail(clipId);
@@ -320,7 +331,7 @@ export const localRepo = {
     );
     const updated = (await db.getClipDetail(clipId)) ?? current;
     notifyLocalChange();
-    triggerIngest(clipId, aiConfig);
+    triggerIngest(clipId, aiConfig, remoteFallback);
     return updated;
   },
 
@@ -342,8 +353,11 @@ export const localRepo = {
   },
 
   /** Re-run clips that were interrupted mid-ingest (restart / reboot). */
-  resumePending(aiConfig: LocalAiConfig): Promise<number> {
-    return resumePendingClips(aiConfig);
+  resumePending(
+    aiConfig: LocalAiConfig,
+    remoteFallback?: RemoteExtractFallback,
+  ): Promise<number> {
+    return resumePendingClips(aiConfig, undefined, remoteFallback);
   },
 
   countPendingSync(): Promise<number> {

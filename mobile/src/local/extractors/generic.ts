@@ -478,6 +478,26 @@ export interface FetchedPage {
   contentType: string | null;
 }
 
+/**
+ * Stateless fetch options shared by every extractor request.
+ *
+ * `credentials: 'omit'` is load-bearing on Android: React Native's
+ * `XMLHttpRequest` defaults to `withCredentials = true`, which makes OkHttp's
+ * `ForwardingCookieHandler` replay/persist every cookie into the WebView
+ * `CookieManager`. Xiaohongshu then hands us `acw_tc` + a 1-year `abRequestId`
+ * that pin the app to a stale, already-throttled session across clips, IP
+ * changes (Wi-Fi/5G/VPN) and reboots. `omit` switches `NetworkingModule` to
+ * `CookieJar.NO_COOKIES`, so each clip is fetched as a brand new visitor.
+ *
+ * Do **not** add `cache: 'no-store'` here: `whatwg-fetch` implements it by
+ * appending `&_=<timestamp>` to the URL, which corrupts signed XHS query
+ * params. Use the `Cache-Control: no-cache` request header instead.
+ */
+const STATELESS_FETCH_OPTIONS = {
+  redirect: 'follow',
+  credentials: 'omit',
+} as const;
+
 export async function fetchHtml(
   url: string,
   headers: Record<string, string> = BROWSER_HEADERS,
@@ -486,7 +506,11 @@ export async function fetchHtml(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { headers, redirect: 'follow', signal: controller.signal });
+    const response = await fetch(url, {
+      ...STATELESS_FETCH_OPTIONS,
+      headers,
+      signal: controller.signal,
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const html = await response.text();
     return {
@@ -507,7 +531,11 @@ export async function fetchJson(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { headers, redirect: 'follow', signal: controller.signal });
+    const response = await fetch(url, {
+      ...STATELESS_FETCH_OPTIONS,
+      headers,
+      signal: controller.signal,
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
   } finally {

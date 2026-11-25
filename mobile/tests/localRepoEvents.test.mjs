@@ -21,11 +21,13 @@ import {
   describeIngestError,
   firstContentLine,
   notifyLocalChange as notifyLocalChangeFromIngest,
+  pickBetterExtraction,
   processClipLocally,
   resetLocalChangeListeners,
   runWithConcurrency,
   shouldAbortIngest,
   shouldRunLocalAi,
+  shouldTryRemoteExtractFallback,
   subscribeLocalChanges as subscribeFromIngest,
 } from '../src/local/ingest.ts';
 
@@ -34,6 +36,8 @@ const AI_CONFIG = {
   apiKey: 'sk-local-test',
   model: 'test-model',
 };
+
+const API_CONFIG = { baseUrl: 'http://192.168.31.98:8420', token: 'nuc-token' };
 
 afterEach(() => {
   resetLocalChangeListeners();
@@ -574,4 +578,127 @@ test('runWithConcurrency swallows a failing item and keeps draining the queue', 
 test('processClipLocally ignores blank ids without touching SQLite', async () => {
   await assert.doesNotReject(processClipLocally('   ', AI_CONFIG));
   await assert.doesNotReject(processClipLocally('', AI_CONFIG));
+});
+
+// ---------------------------------------------------------------------------
+// ingest: NUC remote-extract fallback (pure planning helpers)
+// ---------------------------------------------------------------------------
+
+test('shouldTryRemoteExtractFallback only fires for a partial clip on a configured NUC', () => {
+  const fallback = { apiConfig: API_CONFIG, syncEnabled: true };
+
+  // A complete local extraction is never re-uploaded.
+  assert.equal(shouldTryRemoteExtractFallback(extracted(), fallback), false);
+
+  // The only happy path: partial local + sync on + a real baseUrl.
+  assert.equal(shouldTryRemoteExtractFallback(extracted({ partial: true }), fallback), true);
+
+  // Missing / disabled fallback stays fully offline.
+  assert.equal(shouldTryRemoteExtractFallback(extracted({ partial: true }), undefined), false);
+  assert.equal(shouldTryRemoteExtractFallback(extracted({ partial: true }), null), false);
+  assert.equal(
+    shouldTryRemoteExtractFallback(extracted({ partial: true }), { ...fallback, syncEnabled: false }),
+    false,
+  );
+  assert.equal(
+    shouldTryRemoteExtractFallback(extracted({ partial: true }), { ...fallback, syncEnabled: 'yes' }),
+    false,
+    'syncEnabled must be strictly true',
+  );
+
+  // Blank / whitespace-only baseUrl counts as not configured.
+  for (const baseUrl of ['', '   ', '\n\t']) {
+    assert.equal(
+      shouldTryRemoteExtractFallback(extracted({ partial: true }), {
+        apiConfig: { baseUrl, token: '' },
+        syncEnabled: true,
+      }),
+      false,
+      `baseUrl ${JSON.stringify(baseUrl)} must not trigger a request`,
+    );
+  }
+});
+
+test('pickBetterExtraction always prefers a complete remote extraction', () => {
+  const local = extracted({
+    partial: true,
+    content_text: '原始分享文案',
+    content_markdown: '原始分享文案',
+  });
+  const remote = extracted({
+    url: 'https://example.com/remote',
+    title: '远程正文',
+    content_text: '完整的笔记正文',
+    content_markdown: '# 远程正文\n\n完整的笔记正文',
+    partial: false,
+    error_message: null,
+  });
+
+  assert.equal(pickBetterExtraction(local, remote), remote);
+
+  // A complete local clip is never replaced by a partial remote one.
+  const readyLocal = extracted();
+  assert.equal(pickBetterExtraction(readyLocal, remote), remote);
+  assert.equal(pickBetterExtraction(readyLocal, extracted({ partial: true })), readyLocal);
+});
+
+test('pickBetterExtraction keeps local when the remote result is missing or emptier', () => {
+  const local = extracted({
+    partial: true,
+    content_text: '原始分享文案',
+    content_markdown: '原始分享文案',
+    image_urls: [],
+  });
+
+  assert.equal(pickBetterExtraction(local, null), local);
+  assert.equal(pickBetterExtraction(local, undefined), local);
+
+  // Remote partial echoing the same caption adds nothing.
+  const echoed = extracted({
+    partial: true,
+    content_text: '原始分享文案',
+    content_markdown: '原始分享文案',
+    image_urls: [],
+  });
+  assert.equal(pickBetterExtraction(local, echoed), local);
+
+  // Remote partial whose body is just the URL is not "有效正文".
+  const urlOnly = extracted({
+    partial: true,
+    content_text: 'https://example.com/a',
+    content_markdown: 'https://example.com/a',
+    image_urls: [],
+  });
+  assert.equal(pickBetterExtraction(local, urlOnly), local);
+
+  // A ready local clip is never downgraded.
+  const readyLocal = extracted();
+  assert.equal(pickBetterExtraction(readyLocal, extracted({ partial: true })), readyLocal);
+  assert.equal(pickBetterExtraction(readyLocal, null), readyLocal);
+});
+
+test('pickBetterExtraction upgrades a partial local result with richer remote content', () => {
+  const local = extracted({
+    partial: true,
+    content_text: '原始分享文案',
+    content_markdown: '原始分享文案',
+    image_urls: [],
+    error_message: '触发小红书登录拦截',
+  });
+
+  const withImages = extracted({
+    partial: true,
+    content_text: '原始分享文案',
+    content_markdown: '原始分享文案',
+    image_urls: ['https://sns.xhscdn.com/a.jpg'],
+  });
+  assert.equal(pickBetterExtraction(local, withImages), withImages);
+
+  const withBody = extracted({
+    partial: true,
+    content_text: '半页能读到的笔记正文',
+    content_markdown: '# 标题\n\n半页能读到的笔记正文',
+    image_urls: [],
+  });
+  assert.equal(pickBetterExtraction(local, withBody), withBody);
 });
