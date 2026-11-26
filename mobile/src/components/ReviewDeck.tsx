@@ -6,24 +6,29 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  type ReactNode,
 } from 'react';
 import {
   Animated,
-  Dimensions,
   PanResponder,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 
 import { colors, radius, spacing } from '../theme';
 import type { ClipDetail, ReviewActionType } from '../types';
 import { ClipCard } from './ClipCard';
 import { MOTION } from './Motion';
+import {
+  computeSwipeThreshold,
+  resolveSwipeRelease,
+  shouldCaptureHorizontalSwipe,
+} from './reviewSwipeMath';
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const SWIPE_THRESHOLD = Math.min(108, SCREEN_WIDTH * 0.27);
-const FLY_OUT_DISTANCE = SCREEN_WIDTH + 90;
+/** Extra travel past the screen edge while the card flies out. */
+const FLY_OUT_GUTTER = 90;
 
 export interface ReviewDeckHandle {
   triggerAction: (action: ReviewActionType) => void;
@@ -34,6 +39,8 @@ interface ReviewDeckProps {
   queueLabel: string;
   remaining: number;
   disabled?: boolean;
+  /** Bottom action bar + hint, rendered inside the same swipe stage as the card. */
+  footer?: ReactNode;
   onOpenDetail: () => void;
   onPreviewImage?: () => void;
   onAction: (action: ReviewActionType) => void;
@@ -47,9 +54,22 @@ interface ReviewDeckProps {
  * - Also exposes imperative `triggerAction` so bottom buttons drive the same physics
  */
 export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function ReviewDeck(
-  { clip, queueLabel, remaining, disabled = false, onOpenDetail, onPreviewImage, onAction, onDraggingChange },
+  {
+    clip,
+    queueLabel,
+    remaining,
+    disabled = false,
+    footer,
+    onOpenDetail,
+    onPreviewImage,
+    onAction,
+    onDraggingChange,
+  },
   ref,
 ) {
+  const { width: screenWidth } = useWindowDimensions();
+  const swipeThreshold = useMemo(() => computeSwipeThreshold(screenWidth), [screenWidth]);
+
   const panX = useRef(new Animated.Value(0)).current;
   const panY = useRef(new Animated.Value(0)).current;
   const cardScale = useRef(new Animated.Value(1)).current;
@@ -127,7 +147,8 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
         return;
       }
 
-      const toX = action === 'archive' ? FLY_OUT_DISTANCE : -FLY_OUT_DISTANCE;
+      const flyOutDistance = screenWidth + FLY_OUT_GUTTER;
+      const toX = action === 'archive' ? flyOutDistance : -flyOutDistance;
       Animated.parallel([
         Animated.timing(panX, {
           toValue: toX,
@@ -152,7 +173,7 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
         onActionRef.current(action);
       });
     },
-    [panX, panY, cardScale, cardOpacity],
+    [panX, panY, cardScale, cardOpacity, screenWidth],
   );
 
   useImperativeHandle(ref, () => ({ triggerAction: flyOut }), [flyOut]);
@@ -165,40 +186,39 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
     ]).start();
   }, [panX, panY]);
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => false,
-        onMoveShouldSetPanResponder: (_evt, gesture) => {
-          if (disabledRef.current || animatingRef.current) return false;
-          const absX = Math.abs(gesture.dx);
-          const absY = Math.abs(gesture.dy);
-          return absX > 12 && absX > absY * 1.35;
-        },
-        onPanResponderGrant: () => {
-          onDraggingChangeRef.current?.(true);
-        },
-        onPanResponderMove: (_evt, gesture) => {
-          panX.setValue(gesture.dx);
-          panY.setValue(gesture.dy * 0.16);
-        },
-        onPanResponderRelease: (_evt, gesture) => {
-          const quickRight = gesture.vx > 0.65 && gesture.dx > 40;
-          const quickLeft = gesture.vx < -0.65 && gesture.dx < -40;
-          if (gesture.dx > SWIPE_THRESHOLD || quickRight) {
-            flyOut('archive');
-          } else if (gesture.dx < -SWIPE_THRESHOLD || quickLeft) {
-            flyOut('snooze');
-          } else {
-            snapBack();
-          }
-        },
-        onPanResponderTerminate: () => {
+  const panResponder = useMemo(() => {
+    const canSwipe = () => !disabledRef.current && !animatingRef.current;
+    const shouldCapture = (_evt: unknown, gesture: { dx: number; dy: number }) =>
+      canSwipe() && shouldCaptureHorizontalSwipe(gesture.dx, gesture.dy);
+
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      // Capture on the parent stage so a thumb that starts on the bottom action
+      // bar still drags the card, even when a Pressable is under the finger.
+      onMoveShouldSetPanResponderCapture: shouldCapture,
+      onMoveShouldSetPanResponder: shouldCapture,
+      // Never hand a committed swipe to the ScrollView halfway through an arc.
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => {
+        onDraggingChangeRef.current?.(true);
+      },
+      onPanResponderMove: (_evt, gesture) => {
+        panX.setValue(gesture.dx);
+        panY.setValue(gesture.dy * 0.16);
+      },
+      onPanResponderRelease: (_evt, gesture) => {
+        const action = resolveSwipeRelease(gesture.dx, gesture.vx, screenWidth);
+        if (action) {
+          flyOut(action);
+        } else {
           snapBack();
-        },
-      }),
-    [panX, panY, flyOut, snapBack],
-  );
+        }
+      },
+      onPanResponderTerminate: () => {
+        snapBack();
+      },
+    });
+  }, [panX, panY, flyOut, snapBack, screenWidth]);
 
   const rotate = panX.interpolate({
     inputRange: [-240, 0, 240],
@@ -207,25 +227,25 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
   });
 
   const archiveStampOpacity = panX.interpolate({
-    inputRange: [24, SWIPE_THRESHOLD],
+    inputRange: [24, swipeThreshold],
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
 
   const archiveStampScale = panX.interpolate({
-    inputRange: [24, SWIPE_THRESHOLD],
+    inputRange: [24, swipeThreshold],
     outputRange: [0.86, 1],
     extrapolate: 'clamp',
   });
 
   const snoozeStampOpacity = panX.interpolate({
-    inputRange: [-SWIPE_THRESHOLD, -24],
+    inputRange: [-swipeThreshold, -24],
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
 
   const snoozeStampScale = panX.interpolate({
-    inputRange: [-SWIPE_THRESHOLD, -24],
+    inputRange: [-swipeThreshold, -24],
     outputRange: [1, 0.86],
     extrapolate: 'clamp',
   });
@@ -251,83 +271,99 @@ export const ReviewDeck = forwardRef<ReviewDeckHandle, ReviewDeckProps>(function
 
   return (
     <View style={styles.deckWrap}>
-      {remaining >= 2 ? (
-        <Animated.View
-          pointerEvents="none"
-          style={[styles.deckGhostFar, { transform: [{ translateY: farTranslateY }] }]}
-        />
-      ) : null}
+      <View {...panResponder.panHandlers} style={styles.stage}>
+        <View style={styles.cardStage}>
+          {remaining >= 2 ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[styles.deckGhostFar, { transform: [{ translateY: farTranslateY }] }]}
+            />
+          ) : null}
 
-      {remaining >= 1 ? (
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.deckGhostNear,
-            { transform: [{ scale: nearScale }, { translateY: nearTranslateY }] },
-          ]}
-        />
-      ) : null}
+          {remaining >= 1 ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.deckGhostNear,
+                { transform: [{ scale: nearScale }, { translateY: nearTranslateY }] },
+              ]}
+            />
+          ) : null}
 
-      <Animated.View
-        {...panResponder.panHandlers}
-        style={[
-          styles.cardWrap,
-          {
-            opacity: cardOpacity,
-            transform: [
-              { translateX: panX },
-              { translateY: panY },
-              { rotate },
-              { scale: cardScale },
-            ],
-          },
-        ]}
-      >
-        <ClipCard
-          clip={clip}
-          variant="feature"
-          queueLabel={queueLabel}
-          keyPoints={clip.key_points}
-          onPress={onOpenDetail}
-          onPreviewImage={onPreviewImage}
-        />
+          <Animated.View
+            style={[
+              styles.cardWrap,
+              {
+                opacity: cardOpacity,
+                transform: [
+                  { translateX: panX },
+                  { translateY: panY },
+                  { rotate },
+                  { scale: cardScale },
+                ],
+              },
+            ]}
+          >
+            <ClipCard
+              clip={clip}
+              variant="feature"
+              fillHeight
+              queueLabel={queueLabel}
+              keyPoints={clip.key_points}
+              onPress={onOpenDetail}
+              onPreviewImage={onPreviewImage}
+            />
 
-        {/* Swipe right intent stamp: 已消化 */}
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.stamp,
-            styles.stampArchive,
-            { opacity: archiveStampOpacity, transform: [{ scale: archiveStampScale }] },
-          ]}
-        >
-          <Ionicons name="checkmark" size={16} color={colors.onAccent} />
-          <Text style={styles.stampArchiveText}>已消化</Text>
-        </Animated.View>
+            {/* Swipe right intent stamp: 已消化 */}
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.stamp,
+                styles.stampArchive,
+                { opacity: archiveStampOpacity, transform: [{ scale: archiveStampScale }] },
+              ]}
+            >
+              <Ionicons name="checkmark" size={16} color={colors.onAccent} />
+              <Text style={styles.stampArchiveText}>已消化</Text>
+            </Animated.View>
 
-        {/* Swipe left intent stamp: 留待下次 */}
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.stamp,
-            styles.stampSnooze,
-            { opacity: snoozeStampOpacity, transform: [{ scale: snoozeStampScale }] },
-          ]}
-        >
-          <Ionicons name="time-outline" size={15} color={colors.bg} />
-          <Text style={styles.stampSnoozeText}>留待下次</Text>
-        </Animated.View>
-      </Animated.View>
+            {/* Swipe left intent stamp: 留待下次 */}
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.stamp,
+                styles.stampSnooze,
+                { opacity: snoozeStampOpacity, transform: [{ scale: snoozeStampScale }] },
+              ]}
+            >
+              <Ionicons name="time-outline" size={15} color={colors.bg} />
+              <Text style={styles.stampSnoozeText}>留待下次</Text>
+            </Animated.View>
+          </Animated.View>
+        </View>
+
+        {footer ? <View style={styles.footer}>{footer}</View> : null}
+      </View>
     </View>
   );
 });
 
 const styles = StyleSheet.create({
   deckWrap: {
+    // flexGrow (not flex) keeps the intrinsic leaf height as the flex basis so
+    // short screens can scroll; tall screens still fill the remaining stage.
+    flexGrow: 1,
     position: 'relative',
     // ClipCard 内部已含 paddingTop: 6（纸夹预留位），此处不再叠加
     paddingTop: 0,
-    paddingBottom: 14,
+  },
+  stage: {
+    flexGrow: 1,
+  },
+  cardStage: {
+    flexGrow: 1,
+    // 留出卡组下层纸张探出的缝隙
+    paddingBottom: 12,
   },
   deckGhostNear: {
     position: 'absolute',
@@ -348,7 +384,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceAlt,
   },
   cardWrap: {
+    flexGrow: 1,
     position: 'relative',
+  },
+  footer: {
+    gap: 10,
+    paddingTop: 2,
   },
   stamp: {
     position: 'absolute',

@@ -454,9 +454,11 @@ export default function ReviewTodayScreen() {
         ) : null}
 
         {loading && !refreshing ? (
-          <SkeletonHeroCard />
+          <View style={styles.stateStage}>
+            <SkeletonHeroCard />
+          </View>
         ) : finished ? (
-          <FadeSlideIn distance={14} duration={300}>
+          <FadeSlideIn distance={14} duration={300} style={styles.stateStage}>
             <View style={styles.doneCard}>
               <Animated.View style={[styles.doneIcon, { transform: [{ scale: doneBadgeScale }] }]}>
                 <Ionicons name="checkmark" size={20} color={colors.accent} />
@@ -501,56 +503,59 @@ export default function ReviewTodayScreen() {
               onPreviewImage={lightboxItems.length ? () => setLightboxIndex(0) : undefined}
               onAction={(action) => void commitAction(action)}
               onDraggingChange={setDeckDragging}
+              footer={
+                <>
+                  <View style={styles.actions}>
+                    <SpringPressable
+                      onPress={() => handleButtonAction('snooze')}
+                      disabled={acting}
+                      scaleTo={0.95}
+                      style={styles.secondaryActionFlex}
+                      contentStyle={[styles.secondaryAction, acting && styles.actionMuted]}
+                    >
+                      <Ionicons name="time-outline" size={15} color={colors.muted} />
+                      <Text style={styles.secondaryActionLabel}>留待下次</Text>
+                    </SpringPressable>
+
+                    <SpringPressable
+                      onPress={() => handleButtonAction('archive')}
+                      disabled={acting}
+                      scaleTo={0.95}
+                      style={styles.primaryActionFlex}
+                      contentStyle={[styles.primaryAction, acting && styles.actionMuted]}
+                    >
+                      <Ionicons name="checkmark" size={16} color={colors.onAccent} />
+                      <Text style={styles.primaryActionLabel}>已消化</Text>
+                    </SpringPressable>
+
+                    <SpringPressable
+                      onPress={() => handleButtonAction('delete')}
+                      disabled={acting}
+                      scaleTo={0.92}
+                      contentStyle={[styles.ghostDangerAction, acting && styles.actionMuted]}
+                      accessibilityLabel="删除剪藏"
+                    >
+                      <Ionicons name="trash-outline" size={16} color={colors.muted} />
+                    </SpringPressable>
+                  </View>
+
+                  {acting ? (
+                    <View style={styles.syncingRow}>
+                      <ActivityIndicator size="small" color={colors.muted} />
+                      <Text style={styles.syncingText}>正在归档…</Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.remainingHint}>
+                      {remaining > 0
+                        ? `右滑已消化 · 左滑留待下次 · 余 ${remaining} 页`
+                        : totalActive > 0
+                          ? `右滑已消化 · 左滑留待下次 · 在库 ${totalActive} 条`
+                          : '右滑已消化 · 左滑留待下次'}
+                    </Text>
+                  )}
+                </>
+              }
             />
-
-            <View style={styles.actions}>
-              <SpringPressable
-                onPress={() => handleButtonAction('snooze')}
-                disabled={acting}
-                scaleTo={0.95}
-                style={styles.secondaryActionFlex}
-                contentStyle={[styles.secondaryAction, acting && styles.actionMuted]}
-              >
-                <Ionicons name="time-outline" size={15} color={colors.muted} />
-                <Text style={styles.secondaryActionLabel}>留待下次</Text>
-              </SpringPressable>
-
-              <SpringPressable
-                onPress={() => handleButtonAction('archive')}
-                disabled={acting}
-                scaleTo={0.95}
-                style={styles.primaryActionFlex}
-                contentStyle={[styles.primaryAction, acting && styles.actionMuted]}
-              >
-                <Ionicons name="checkmark" size={16} color={colors.onAccent} />
-                <Text style={styles.primaryActionLabel}>已消化</Text>
-              </SpringPressable>
-
-              <SpringPressable
-                onPress={() => handleButtonAction('delete')}
-                disabled={acting}
-                scaleTo={0.92}
-                contentStyle={[styles.ghostDangerAction, acting && styles.actionMuted]}
-                accessibilityLabel="删除剪藏"
-              >
-                <Ionicons name="trash-outline" size={16} color={colors.muted} />
-              </SpringPressable>
-            </View>
-
-            {acting ? (
-              <View style={styles.syncingRow}>
-                <ActivityIndicator size="small" color={colors.muted} />
-                <Text style={styles.syncingText}>正在归档…</Text>
-              </View>
-            ) : (
-              <Text style={styles.remainingHint}>
-                {remaining > 0
-                  ? `右滑已消化 · 左滑留待下次 · 余 ${remaining} 页`
-                  : totalActive > 0
-                    ? `右滑已消化 · 左滑留待下次 · 在库 ${totalActive} 条`
-                    : '右滑已消化 · 左滑留待下次'}
-              </Text>
-            )}
           </FadeSlideIn>
         ) : null}
       </ScrollView>
@@ -571,9 +576,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   content: {
+    flexGrow: 1,
     paddingHorizontal: 18,
     paddingTop: 14,
-    paddingBottom: spacing.xxl,
+    paddingBottom: 14,
     gap: 14,
   },
   headerRow: {
@@ -703,7 +709,15 @@ const styles = StyleSheet.create({
   },
 
   reviewBlock: {
-    gap: 14,
+    // Fill the space left between the header/progress and the tab bar. A
+    // content-based flex basis keeps the intrinsic height as the floor, so a
+    // leaf taller than a short viewport still grows the ScrollView content
+    // instead of clipping behind the footer.
+    flexGrow: 1,
+  },
+  stateStage: {
+    flexGrow: 1,
+    justifyContent: 'center',
   },
 
   actions: {
@@ -715,7 +729,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   secondaryAction: {
-    height: 44,
+    height: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -734,7 +748,7 @@ const styles = StyleSheet.create({
     flex: 1.35,
   },
   primaryAction: {
-    height: 44,
+    height: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -749,8 +763,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   ghostDangerAction: {
-    width: 44,
-    height: 44,
+    width: 48,
+    height: 48,
     borderRadius: 10,
     backgroundColor: 'transparent',
     borderWidth: 1,

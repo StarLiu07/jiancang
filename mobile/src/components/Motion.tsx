@@ -261,10 +261,12 @@ export function SkeletonDetail() {
 
 const styles = StyleSheet.create({
   heroWrap: {
+    flexGrow: 1,
     gap: spacing.lg,
     marginTop: 6,
   },
   heroCard: {
+    flexGrow: 1,
     backgroundColor: colors.sheet,
     borderRadius: radius.lg,
     overflow: 'hidden',
@@ -272,11 +274,16 @@ const styles = StyleSheet.create({
   },
   heroCoverPad: {
     paddingHorizontal: 14,
-    paddingTop: 18,
+    paddingTop: 22,
+    flexGrow: 1,
+    flexShrink: 1,
   },
   heroCover: {
     width: '100%',
-    aspectRatio: 4 / 2.65,
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 200,
+    maxHeight: 360,
     borderRadius: radius.sm,
     backgroundColor: colors.surface,
   },
@@ -285,11 +292,14 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 18,
     gap: 10,
+    flexGrow: 1,
+    flexShrink: 1,
   },
   tagRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 6,
+    marginTop: 'auto',
+    paddingTop: 6,
   },
   actionSkeletonRow: {
     flexDirection: 'row',
