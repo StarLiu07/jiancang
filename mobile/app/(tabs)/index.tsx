@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -19,6 +19,11 @@ import { ClipboardBanner } from '../../src/components/ClipboardBanner';
 import { ImageLightboxModal } from '../../src/components/ImageLightboxModal';
 import { FadeSlideIn, MOTION, SkeletonHeroCard, SpringPressable } from '../../src/components/Motion';
 import { ReviewDeck, type ReviewDeckHandle } from '../../src/components/ReviewDeck';
+import {
+  buildPagerHint,
+  clampPageIndex,
+  computeAfterRemoveIndex,
+} from '../../src/components/reviewPagerMath';
 import { useToast } from '../../src/components/Toast';
 import { buildLightboxItems, type LightboxImageItem } from '../../src/components/imageZoomMath';
 import { useClipboardLink } from '../../src/hooks/useClipboardLink';
@@ -94,7 +99,9 @@ export default function ReviewTodayScreen() {
   const [capturing, setCapturing] = useState(false);
   const [deckDragging, setDeckDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightbox, setLightbox] = useState<{ images: LightboxImageItem[]; index: number } | null>(
+    null,
+  );
 
   const requestRef = useRef(0);
   const loadedRef = useRef(false);
@@ -109,6 +116,7 @@ export default function ReviewTodayScreen() {
   // resubscribing (a resubscribe mid-swipe would lose the pending debounce).
   const itemsRef = useRef<ClipDetail[]>(items);
   const indexRef = useRef(index);
+  const reviewedTodayRef = useRef(reviewedToday);
   const loadingRef = useRef(loading);
   const refreshingRef = useRef(refreshing);
   const draggingRef = useRef(deckDragging);
@@ -118,6 +126,7 @@ export default function ReviewTodayScreen() {
 
   itemsRef.current = items;
   indexRef.current = index;
+  reviewedTodayRef.current = reviewedToday;
   loadingRef.current = loading;
   refreshingRef.current = refreshing;
   draggingRef.current = deckDragging;
@@ -204,9 +213,10 @@ export default function ReviewTodayScreen() {
 
       const position = data.items.findIndex((item) => item.id === currentId);
       if (position < 0) {
-        // The open card left the queue (deleted/archived elsewhere). Keep it on
-        // screen instead of yanking it away mid-read; the user's next action
-        // re-syncs the deck.
+        // The open leaf left the queue elsewhere (archived / deleted from the
+        // detail page): drop it and let the next card slide into the same slot.
+        setItems(data.items);
+        setIndex(clampPageIndex(indexRef.current, data.items.length));
         return;
       }
 
@@ -262,32 +272,52 @@ export default function ReviewTodayScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (readyRef.current && loadedRef.current) void loadRef.current('initial');
-    }, []),
+      if (!readyRef.current) return;
+      if (!loadedRef.current) {
+        void loadRef.current('initial');
+        return;
+      }
+      // Focus refresh is silent: a card archived/deleted from the detail page
+      // disappears from the batch without flashing the skeleton, and a card
+      // that is still queued keeps both its page slot and its content.
+      void refreshDeckSilently();
+    }, [refreshDeckSilently]),
   );
 
   useEffect(() => {
     if (ready) void loadRef.current('initial');
   }, [ready]);
 
-  const current = index < items.length ? items[index] : null;
+  const clampedIndex = clampPageIndex(index, items.length);
+  const current = items[clampedIndex] ?? null;
 
-  // Preview every archived image of the card on screen; fall back to the cover
-  // when the clip has no media rows yet.
-  const lightboxItems = useMemo<LightboxImageItem[]>(() => {
-    if (!current) return [];
-    const { items: mediaItems } = buildLightboxItems(
-      current.media ?? [],
-      (url) => mediaUrl(config, url),
-    );
-    if (mediaItems.length) return mediaItems;
+  // Preview the tapped leaf's archived images; fall back to its cover when the
+  // clip has no media rows yet. Building this per tap keeps the lightbox on the
+  // card the user actually zoomed, even after paging elsewhere.
+  const buildClipImages = useCallback(
+    (clip: ClipDetail): LightboxImageItem[] => {
+      const { items: mediaItems } = buildLightboxItems(
+        clip.media ?? [],
+        (url) => mediaUrl(config, url),
+      );
+      if (mediaItems.length) return mediaItems;
 
-    const cover = mediaUrl(config, current.cover_media_url);
-    return cover ? [{ id: `${current.id}-cover`, uri: cover, caption: '封面' }] : [];
-  }, [config, current]);
+      const cover = mediaUrl(config, clip.cover_media_url);
+      return cover ? [{ id: `${clip.id}-cover`, uri: cover, caption: '封面' }] : [];
+    },
+    [config],
+  );
 
-  const remaining = Math.max(0, items.length - index - 1);
-  const finished = !loading && !error && index >= items.length;
+  const handlePreviewImage = useCallback(
+    (clip: ClipDetail) => {
+      const images = buildClipImages(clip);
+      if (!images.length) return;
+      setLightbox({ images, index: 0 });
+    },
+    [buildClipImages],
+  );
+
+  const finished = !loading && !error && (items.length === 0 || index >= items.length);
   const percent = dailyTarget > 0 ? Math.min(100, Math.round((reviewedToday / dailyTarget) * 100)) : 0;
   const progressWidth = `${percent}%` as DimensionValue;
   const useSegments = dailyTarget > 0 && dailyTarget <= 10;
@@ -355,47 +385,81 @@ export default function ReviewTodayScreen() {
     captureClipboard,
   ]);
 
+  /**
+   * Apply one review action to a single leaf. The card is removed from the
+   * batch optimistically so the next page is already in place when its exit
+   * animation ends; any failure restores items, page and progress atomically.
+   */
   const commitAction = useCallback(
-    async (action: ReviewActionType) => {
-      const clip = items[index];
-      if (!clip || acting) return;
+    async (action: ReviewActionType, clipId?: string) => {
+      if (actingRef.current) return;
 
-      const previousIndex = index;
-      const previousReviewed = reviewedToday;
+      const previousItems = itemsRef.current;
+      const previousIndex = indexRef.current;
+      const targetId = clipId ?? previousItems[previousIndex]?.id;
+      if (!targetId) return;
 
+      const removedIndex = previousItems.findIndex((item) => item.id === targetId);
+      if (removedIndex < 0) return;
+
+      const previousReviewed = reviewedTodayRef.current;
+      const nextIndex = computeAfterRemoveIndex(
+        previousIndex,
+        removedIndex,
+        previousItems.length,
+      );
+
+      actingRef.current = true;
       setActing(true);
-      setIndex(previousIndex + 1);
+      setItems(previousItems.filter((_item, idx) => idx !== removedIndex));
+      setIndex(nextIndex);
       setReviewedToday(previousReviewed + 1);
 
       try {
-        const result = await localRepo.reviewAction(clip.id, { action });
+        const result = await localRepo.reviewAction(targetId, { action });
         setReviewedToday(result.reviewed_today);
-        setDailyTarget(result.daily_target || dailyTarget);
+        if (result.daily_target > 0) setDailyTarget(result.daily_target);
         setTotalActive((value) => Math.max(0, value - (action === 'snooze' ? 0 : 1)));
         show(ACTION_LABEL[action], 'success');
       } catch (err) {
+        setItems(previousItems);
         setIndex(previousIndex);
         setReviewedToday(previousReviewed);
         show(pickErrorMessage(err), 'error');
       } finally {
+        actingRef.current = false;
         setActing(false);
       }
     },
-    [items, index, acting, reviewedToday, dailyTarget, show],
+    [show],
   );
 
   const handleButtonAction = (action: ReviewActionType) => {
-    if (acting) return;
+    if (actingRef.current) return;
+    const clip = items[clampedIndex];
+    if (!clip) return;
     if (deckRef.current) {
       deckRef.current.triggerAction(action);
     } else {
-      void commitAction(action);
+      void commitAction(action, clip.id);
     }
   };
 
-  const openDetail = (id: string) => {
-    router.push({ pathname: '/clip/[id]', params: { id } });
-  };
+  const handleDeckAction = useCallback(
+    (action: ReviewActionType, clipId: string) => {
+      void commitAction(action, clipId);
+    },
+    [commitAction],
+  );
+
+  const handleIndexChange = useCallback((next: number) => setIndex(next), []);
+
+  const openDetail = useCallback(
+    (id: string) => {
+      router.push({ pathname: '/clip/[id]', params: { id } });
+    },
+    [router],
+  );
 
   const spinInterpolate = refreshSpin.interpolate({
     inputRange: [0, 1],
@@ -411,201 +475,206 @@ export default function ReviewTodayScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <ScrollView
-        scrollEnabled={!deckDragging}
-        contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={refreshDeck}
-            tintColor={colors.accent}
-            colors={[colors.accent]}
-            progressBackgroundColor={colors.sheet}
-          />
-        }
-      >
-        <View style={styles.headerRow}>
-          <View style={styles.headerText}>
-            <Text style={styles.dateMono}>{todayLabel()}</Text>
-            <Text style={styles.title}>今日折页</Text>
-          </View>
-
-          <View style={styles.headerRight}>
-            <View style={styles.progressCaptionRow}>
-              <Text style={styles.progressCaption}>今日进度</Text>
-              <SpringPressable
-                onPress={refreshDeck}
-                scaleTo={0.88}
-                hitSlop={8}
-                contentStyle={styles.refreshIconBtn}
-                accessibilityLabel="刷新今日折页"
-              >
-                <Animated.View style={{ transform: [{ rotate: spinInterpolate }] }}>
-                  <Ionicons name="refresh" size={13} color={colors.muted} />
-                </Animated.View>
-              </SpringPressable>
+      <View style={styles.screen}>
+        <View style={styles.topChrome}>
+          <View style={styles.headerRow}>
+            <View style={styles.headerText}>
+              <Text style={styles.dateMono}>{todayLabel()}</Text>
+              <Text style={styles.title}>今日折页</Text>
             </View>
-            <Text style={styles.progressCounter}>
-              <Text style={styles.progressStrong}>{pad2(reviewedToday)}</Text>
-              <Text style={styles.progressMuted}> / {pad2(dailyTarget)}</Text>
-            </Text>
-          </View>
-        </View>
 
-        <View style={styles.progressSection}>
-          {useSegments ? (
-            <View style={styles.segmentTrack}>
-              {Array.from({ length: dailyTarget }).map((_, idx) => (
-                <ProgressSegment
-                  key={idx}
-                  done={idx < reviewedToday}
-                  current={idx === reviewedToday && !finished}
-                />
-              ))}
-            </View>
-          ) : (
-            <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: progressWidth }]} />
-            </View>
-          )}
-        </View>
-
-        {link ? (
-          <ClipboardBanner
-            url={link}
-            busy={capturing}
-            onCapture={() => void captureClipboard(link, rawText)}
-            onDismiss={() => void dismiss(link)}
-          />
-        ) : null}
-
-        {error ? (
-          <FadeSlideIn distance={8}>
-            <View style={styles.errorCard}>
-              <Ionicons name="alert-circle-outline" size={19} color={colors.danger} />
-              <View style={styles.errorBody}>
-                <Text style={styles.errorTitle}>本机收藏暂时读不出来</Text>
-                <Text style={styles.errorText}>{error}</Text>
+            <View style={styles.headerRight}>
+              <View style={styles.progressCaptionRow}>
+                <Text style={styles.progressCaption}>今日进度</Text>
+                <SpringPressable
+                  onPress={refreshDeck}
+                  scaleTo={0.88}
+                  hitSlop={8}
+                  contentStyle={styles.refreshIconBtn}
+                  accessibilityLabel="刷新今日折页"
+                >
+                  <Animated.View style={{ transform: [{ rotate: spinInterpolate }] }}>
+                    <Ionicons name="refresh" size={13} color={colors.muted} />
+                  </Animated.View>
+                </SpringPressable>
               </View>
-              <Pressable onPress={() => void loadRef.current('initial')} style={styles.errorRetry} hitSlop={6}>
-                <Text style={styles.errorRetryText}>重试</Text>
-              </Pressable>
+              <Text style={styles.progressCounter}>
+                <Text style={styles.progressStrong}>{pad2(reviewedToday)}</Text>
+                <Text style={styles.progressMuted}> / {pad2(dailyTarget)}</Text>
+              </Text>
             </View>
-          </FadeSlideIn>
-        ) : null}
+          </View>
+
+          <View style={styles.progressSection}>
+            {useSegments ? (
+              <View style={styles.segmentTrack}>
+                {Array.from({ length: dailyTarget }).map((_, idx) => (
+                  <ProgressSegment
+                    key={idx}
+                    done={idx < reviewedToday}
+                    current={idx === reviewedToday && !finished}
+                  />
+                ))}
+              </View>
+            ) : (
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: progressWidth }]} />
+              </View>
+            )}
+          </View>
+
+          {link ? (
+            <ClipboardBanner
+              url={link}
+              busy={capturing}
+              onCapture={() => void captureClipboard(link, rawText)}
+              onDismiss={() => void dismiss(link)}
+            />
+          ) : null}
+
+          {error ? (
+            <FadeSlideIn distance={8}>
+              <View style={styles.errorCard}>
+                <Ionicons name="alert-circle-outline" size={19} color={colors.danger} />
+                <View style={styles.errorBody}>
+                  <Text style={styles.errorTitle}>本机收藏暂时读不出来</Text>
+                  <Text style={styles.errorText}>{error}</Text>
+                </View>
+                <Pressable
+                  onPress={() => void loadRef.current('initial')}
+                  style={styles.errorRetry}
+                  hitSlop={6}
+                >
+                  <Text style={styles.errorRetryText}>重试</Text>
+                </Pressable>
+              </View>
+            </FadeSlideIn>
+          ) : null}
+        </View>
 
         {loading && !refreshing ? (
           <View style={styles.stateStage}>
             <SkeletonHeroCard />
           </View>
         ) : finished ? (
-          <FadeSlideIn distance={14} duration={300} style={styles.stateStage}>
-            <View style={styles.doneCard}>
-              <Animated.View style={[styles.doneIcon, { transform: [{ scale: doneBadgeScale }] }]}>
-                <Ionicons name="checkmark" size={20} color={colors.accent} />
-              </Animated.View>
-              <Text style={styles.doneTitle}>{doneHeading}</Text>
-              <Text style={styles.doneText}>
-                {reviewedToday >= dailyTarget
-                  ? '这一批剪藏已经安放妥当，明天清晨再为你挑出新的一批。'
-                  : totalActive > 0
-                    ? `书房里还有 ${totalActive} 条剪藏，可以去收藏目录翻看。`
-                    : '从分享菜单或右下角 + 收进几条，本机就能开始回顾。'}
-              </Text>
-              <View style={styles.doneActions}>
-                <SpringPressable
-                  onPress={refreshDeck}
-                  scaleTo={0.95}
-                  contentStyle={styles.donePrimary}
-                >
-                  <Ionicons name="refresh" size={14} color={colors.bg} />
-                  <Text style={styles.donePrimaryText}>再拉一批</Text>
-                </SpringPressable>
-                <SpringPressable
-                  onPress={() => router.push('/library')}
-                  scaleTo={0.95}
-                  contentStyle={styles.doneSecondary}
-                >
-                  <Ionicons name="file-tray-outline" size={14} color={colors.textSecondary} />
-                  <Text style={styles.doneSecondaryText}>去收藏目录</Text>
-                </SpringPressable>
+          <ScrollView
+            style={styles.emptyState}
+            contentContainerStyle={styles.emptyScroll}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={refreshDeck}
+                tintColor={colors.accent}
+                colors={[colors.accent]}
+                progressBackgroundColor={colors.sheet}
+              />
+            }
+          >
+            <FadeSlideIn distance={14} duration={300}>
+              <View style={styles.doneCard}>
+                <Animated.View style={[styles.doneIcon, { transform: [{ scale: doneBadgeScale }] }]}>
+                  <Ionicons name="checkmark" size={20} color={colors.accent} />
+                </Animated.View>
+                <Text style={styles.doneTitle}>{doneHeading}</Text>
+                <Text style={styles.doneText}>
+                  {reviewedToday >= dailyTarget
+                    ? '这一批剪藏已经安放妥当，明天清晨再为你挑出新的一批。'
+                    : totalActive > 0
+                      ? `书房里还有 ${totalActive} 条剪藏，可以去收藏目录翻看。`
+                      : '从分享菜单或右下角 + 收进几条，本机就能开始回顾。'}
+                </Text>
+                <View style={styles.doneActions}>
+                  <SpringPressable
+                    onPress={refreshDeck}
+                    scaleTo={0.95}
+                    contentStyle={styles.donePrimary}
+                  >
+                    <Ionicons name="refresh" size={14} color={colors.bg} />
+                    <Text style={styles.donePrimaryText}>再拉一批</Text>
+                  </SpringPressable>
+                  <SpringPressable
+                    onPress={() => router.push('/library')}
+                    scaleTo={0.95}
+                    contentStyle={styles.doneSecondary}
+                  >
+                    <Ionicons name="file-tray-outline" size={14} color={colors.textSecondary} />
+                    <Text style={styles.doneSecondaryText}>去收藏目录</Text>
+                  </SpringPressable>
+                </View>
               </View>
-            </View>
-          </FadeSlideIn>
+            </FadeSlideIn>
+          </ScrollView>
         ) : current ? (
-          <FadeSlideIn distance={12} duration={260} style={styles.reviewBlock}>
+          <View style={styles.pagerStage}>
             <ReviewDeck
               ref={deckRef}
-              clip={current}
-              queueLabel={`${Math.min(index + 1, items.length)}/${items.length}`}
-              remaining={remaining}
+              items={items}
+              currentIndex={clampedIndex}
               disabled={acting}
-              onOpenDetail={() => openDetail(current.id)}
-              onPreviewImage={lightboxItems.length ? () => setLightboxIndex(0) : undefined}
-              onAction={(action) => void commitAction(action)}
+              refreshing={refreshing}
+              onRefresh={refreshDeck}
+              onIndexChange={handleIndexChange}
+              onOpenDetail={openDetail}
+              onPreviewImage={handlePreviewImage}
+              onAction={handleDeckAction}
               onDraggingChange={setDeckDragging}
-              footer={
-                <>
-                  <View style={styles.actions}>
-                    <SpringPressable
-                      onPress={() => handleButtonAction('snooze')}
-                      disabled={acting}
-                      scaleTo={0.95}
-                      style={styles.secondaryActionFlex}
-                      contentStyle={[styles.secondaryAction, acting && styles.actionMuted]}
-                    >
-                      <Ionicons name="time-outline" size={15} color={colors.muted} />
-                      <Text style={styles.secondaryActionLabel}>留待下次</Text>
-                    </SpringPressable>
-
-                    <SpringPressable
-                      onPress={() => handleButtonAction('archive')}
-                      disabled={acting}
-                      scaleTo={0.95}
-                      style={styles.primaryActionFlex}
-                      contentStyle={[styles.primaryAction, acting && styles.actionMuted]}
-                    >
-                      <Ionicons name="checkmark" size={16} color={colors.onAccent} />
-                      <Text style={styles.primaryActionLabel}>已消化</Text>
-                    </SpringPressable>
-
-                    <SpringPressable
-                      onPress={() => handleButtonAction('delete')}
-                      disabled={acting}
-                      scaleTo={0.92}
-                      contentStyle={[styles.ghostDangerAction, acting && styles.actionMuted]}
-                      accessibilityLabel="删除剪藏"
-                    >
-                      <Ionicons name="trash-outline" size={16} color={colors.muted} />
-                    </SpringPressable>
-                  </View>
-
-                  {acting ? (
-                    <View style={styles.syncingRow}>
-                      <ActivityIndicator size="small" color={colors.muted} />
-                      <Text style={styles.syncingText}>正在归档…</Text>
-                    </View>
-                  ) : (
-                    <Text style={styles.remainingHint}>
-                      {remaining > 0
-                        ? `右滑已消化 · 左滑留待下次 · 余 ${remaining} 页`
-                        : totalActive > 0
-                          ? `右滑已消化 · 左滑留待下次 · 在库 ${totalActive} 条`
-                          : '右滑已消化 · 左滑留待下次'}
-                    </Text>
-                  )}
-                </>
-              }
             />
-          </FadeSlideIn>
+
+            <View style={styles.footerBar}>
+              <View style={styles.actions}>
+                <SpringPressable
+                  onPress={() => handleButtonAction('snooze')}
+                  disabled={acting}
+                  scaleTo={0.95}
+                  style={styles.secondaryActionFlex}
+                  contentStyle={[styles.secondaryAction, acting && styles.actionMuted]}
+                >
+                  <Ionicons name="time-outline" size={15} color={colors.muted} />
+                  <Text style={styles.secondaryActionLabel}>留待下次</Text>
+                </SpringPressable>
+
+                <SpringPressable
+                  onPress={() => handleButtonAction('archive')}
+                  disabled={acting}
+                  scaleTo={0.95}
+                  style={styles.primaryActionFlex}
+                  contentStyle={[styles.primaryAction, acting && styles.actionMuted]}
+                >
+                  <Ionicons name="checkmark" size={16} color={colors.onAccent} />
+                  <Text style={styles.primaryActionLabel}>已消化</Text>
+                </SpringPressable>
+
+                <SpringPressable
+                  onPress={() => handleButtonAction('delete')}
+                  disabled={acting}
+                  scaleTo={0.92}
+                  contentStyle={[styles.ghostDangerAction, acting && styles.actionMuted]}
+                  accessibilityLabel="删除剪藏"
+                >
+                  <Ionicons name="trash-outline" size={16} color={colors.muted} />
+                </SpringPressable>
+              </View>
+
+              {acting ? (
+                <View style={styles.syncingRow}>
+                  <ActivityIndicator size="small" color={colors.muted} />
+                  <Text style={styles.syncingText}>正在归档…</Text>
+                </View>
+              ) : (
+                <Text style={styles.remainingHint}>
+                  {buildPagerHint(clampedIndex, items.length, totalActive)}
+                </Text>
+              )}
+            </View>
+          </View>
         ) : null}
-      </ScrollView>
+      </View>
 
       <ImageLightboxModal
-        visible={lightboxIndex !== null}
-        images={lightboxItems}
-        initialIndex={lightboxIndex ?? 0}
-        onClose={() => setLightboxIndex(null)}
+        visible={lightbox !== null}
+        images={lightbox?.images ?? []}
+        initialIndex={lightbox?.index ?? 0}
+        onClose={() => setLightbox(null)}
       />
     </SafeAreaView>
   );
@@ -616,11 +685,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bg,
   },
-  content: {
-    flexGrow: 1,
+  screen: {
+    flex: 1,
+  },
+  topChrome: {
     paddingHorizontal: 18,
     paddingTop: 14,
-    paddingBottom: 14,
     gap: 14,
   },
   headerRow: {
@@ -749,16 +819,33 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  reviewBlock: {
-    // Fill the space left between the header/progress and the tab bar. A
-    // content-based flex basis keeps the intrinsic height as the floor, so a
-    // leaf taller than a short viewport still grows the ScrollView content
-    // instead of clipping behind the footer.
-    flexGrow: 1,
-  },
   stateStage: {
-    flexGrow: 1,
+    flex: 1,
+    paddingHorizontal: 18,
+    paddingTop: 14,
     justifyContent: 'center',
+  },
+  emptyScroll: {
+    flexGrow: 1,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 14,
+    justifyContent: 'center',
+  },
+  emptyState: {
+    flex: 1,
+  },
+  pagerStage: {
+    // Full-bleed pager: each leaf owns its own 18px gutter so a page-wide swipe
+    // never starts outside the paging surface.
+    flex: 1,
+    paddingTop: 14,
+  },
+  footerBar: {
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 14,
+    gap: 10,
   },
 
   actions: {
