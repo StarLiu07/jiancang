@@ -78,6 +78,9 @@ export default function SettingsScreen() {
   const [revealToken, setRevealToken] = useState(false);
   const [syncEnabled, setSyncEnabled] = useState(settings.syncEnabled);
   const [autoSync, setAutoSync] = useState(settings.autoSync);
+  const [autoCaptureClipboard, setAutoCaptureClipboard] = useState(
+    settings.autoCaptureClipboard,
+  );
 
   const [llmBaseUrl, setLlmBaseUrl] = useState(settings.llmBaseUrl);
   const [llmApiKey, setLlmApiKey] = useState(settings.llmApiKey);
@@ -112,6 +115,9 @@ export default function SettingsScreen() {
     if (settings.llmModel !== prev.llmModel) setLlmModel(settings.llmModel);
     if (settings.syncEnabled !== prev.syncEnabled) setSyncEnabled(settings.syncEnabled);
     if (settings.autoSync !== prev.autoSync) setAutoSync(settings.autoSync);
+    if (settings.autoCaptureClipboard !== prev.autoCaptureClipboard) {
+      setAutoCaptureClipboard(settings.autoCaptureClipboard);
+    }
     if (settings.reminderEnabled !== prev.reminderEnabled) {
       setReminderEnabled(settings.reminderEnabled);
     }
@@ -143,6 +149,7 @@ export default function SettingsScreen() {
     token.trim() !== settings.token ||
     syncEnabled !== settings.syncEnabled ||
     autoSync !== settings.autoSync ||
+    autoCaptureClipboard !== settings.autoCaptureClipboard ||
     normalizedLlmBaseUrl !== settings.llmBaseUrl ||
     llmApiKey.trim() !== settings.llmApiKey ||
     normalizedModel !== settings.llmModel ||
@@ -211,6 +218,7 @@ export default function SettingsScreen() {
         llmModel: normalizedModel,
         syncEnabled,
         autoSync,
+        autoCaptureClipboard,
         reminderEnabled: enabled,
         reminderHour: hour,
         reminderMinute: minute,
@@ -223,6 +231,7 @@ export default function SettingsScreen() {
       setLlmModel(next.llmModel);
       setSyncEnabled(next.syncEnabled);
       setAutoSync(next.autoSync);
+      setAutoCaptureClipboard(next.autoCaptureClipboard);
       setReminderEnabled(next.reminderEnabled);
       setHour(next.reminderHour);
       setMinute(next.reminderMinute);
@@ -794,6 +803,58 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        <View style={styles.group}>
+          <View style={styles.groupHeading}>
+            <Text style={styles.groupTitle}>快捷剪藏</Text>
+            <Text style={styles.groupMeta}>
+              {autoCaptureClipboard ? '自动收录' : '手动收录'}
+            </Text>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.switchRow}>
+              <View style={styles.switchText}>
+                <Text style={styles.switchLabel}>进入 App 自动收进剪贴板链接</Text>
+                <Text style={styles.switchHint}>
+                  开启后从小红书 / 微信复制链接再打开剪藏，将自动收进书房，无需再点横幅。
+                </Text>
+              </View>
+              <Switch
+                value={autoCaptureClipboard}
+                onValueChange={setAutoCaptureClipboard}
+                trackColor={{ false: colors.surfaceAlt, true: colors.accent }}
+                thumbColor={colors.onAccent}
+              />
+            </View>
+
+            <View style={styles.quickClipCard}>
+              <Text style={styles.quickClipTitle}>三种零切换收进方式</Text>
+
+              <View style={styles.quickClipRow}>
+                <Text style={styles.quickClipIndex}>01</Text>
+                <Text style={styles.quickClipText}>
+                  控制中心磁贴：下拉快捷开关 → 编辑 → 添加「剪藏」，复制链接后下拉一点即收。
+                </Text>
+              </View>
+
+              <View style={styles.quickClipRow}>
+                <Text style={styles.quickClipIndex}>02</Text>
+                <Text style={styles.quickClipText}>
+                  桌面 / 侧边栏 / 手势：长按图标拖出「收剪贴板」，或使用深链
+                  jiancang-clip://clipboard。
+                </Text>
+              </View>
+
+              <View style={styles.quickClipRow}>
+                <Text style={styles.quickClipIndex}>03</Text>
+                <Text style={styles.quickClipText}>
+                  系统分享：在 X / 浏览器点分享 → 剪藏，静默入库不跳转页面。
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
         <SpringPressable
           onPress={() => void save()}
           disabled={saving || !dirty}
@@ -1260,6 +1321,41 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 12,
     lineHeight: 17,
+  },
+  quickClipCard: {
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    padding: spacing.md,
+    gap: 9,
+  },
+  quickClipTitle: {
+    fontFamily: fonts.serif,
+    color: colors.text,
+    fontSize: 13.5,
+    fontWeight: '700',
+    marginBottom: 1,
+  },
+  quickClipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  quickClipIndex: {
+    fontFamily: fonts.mono,
+    color: colors.accent,
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+    minWidth: 18,
+    letterSpacing: 0.4,
+  },
+  quickClipText: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
   },
   timeRow: {
     flexDirection: 'row',
