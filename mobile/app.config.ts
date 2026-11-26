@@ -58,7 +58,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     [
       'expo-share-intent',
       {
-        androidIntentFilters: ['text/plain'],
+        // Android share targets are owned by ./plugins/withQuickClip
+        // (QuickClipActivity handles ACTION_SEND text/plain). Keep this plugin
+        // off Android so .MainActivity does not register a duplicate entry.
+        disableAndroid: true,
         iosActivationRules: {
           NSExtensionActivationSupportsText: true,
           NSExtensionActivationSupportsWebURLWithMaxCount: 1,
@@ -68,5 +71,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     './plugins/withCleartextTraffic',
     './plugins/withApkInstall',
+    './plugins/withQuickClip',
   ],
 });
