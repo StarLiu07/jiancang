@@ -41,10 +41,11 @@ interface ClipCardProps {
   /** When provided, a zoom badge on the feature cover opens the full-screen viewer. */
   onPreviewImage?: () => void;
   /**
-   * Feature only: stretch the leaf to the height of its parent stage. The cover
-   * flexes between 200–360px, the body absorbs the remaining space and the
-   * footer sticks to the bottom edge. Defaults to false so list / detail
-   * layouts keep their intrinsic height.
+   * Feature only: stretch the leaf to the height of its parent stage (a fixed
+   * full-page slot in the Today Review pager). The cover frame flexes between
+   * 110–318px, the body keeps its intrinsic height and the footer sticks to the
+   * bottom edge. Defaults to false so list / detail layouts keep their
+   * intrinsic height.
    */
   fillHeight?: boolean;
 }
@@ -256,14 +257,14 @@ export function ClipCard({
 
 const styles = StyleSheet.create({
   featurePressableFill: {
-    flexGrow: 1,
+    flex: 1,
   },
   featureOuter: {
     paddingTop: 6,
     position: 'relative',
   },
   featureOuterFill: {
-    flexGrow: 1,
+    flex: 1,
   },
   featureCard: {
     backgroundColor: colors.sheet,
@@ -271,7 +272,9 @@ const styles = StyleSheet.create({
     ...elevation.card,
   },
   featureCardFill: {
-    flexGrow: 1,
+    // No `overflow: 'hidden'` here: the page slot is exactly one screen tall,
+    // and clipping would cut the card shadow inside it.
+    flex: 1,
   },
   clampShadow: {
     position: 'absolute',
@@ -325,10 +328,11 @@ const styles = StyleSheet.create({
     paddingTop: 22,
   },
   featureCoverPadFill: {
-    flexGrow: 1,
-    flexShrink: 1,
-    minHeight: 222,
-    maxHeight: 382,
+    // Low floor + cap so a small screen (or a visible clipboard banner above
+    // the deck) can never push “展开全文” out of the fixed page slot.
+    flex: 1,
+    minHeight: 132,
+    maxHeight: 340,
   },
   featureCoverFrame: {
     borderRadius: 8,
@@ -340,10 +344,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
     backgroundColor: colors.surface,
-    flexGrow: 1,
-    flexShrink: 1,
-    minHeight: 200,
-    maxHeight: 360,
+    flex: 1,
+    minHeight: 110,
+    maxHeight: 318,
   },
   coverZoomBadge: {
     position: 'absolute',
@@ -373,7 +376,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   featureBodyFill: {
-    flexGrow: 1,
+    // The cover absorbs the extra page height; the body only gives way when the
+    // page is shorter than its content.
+    flexGrow: 0,
     flexShrink: 1,
   },
   metaRow: {
@@ -457,12 +462,15 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   excerptBodyFill: {
-    flexGrow: 1,
-    flexShrink: 1,
+    // Overrides the list-only `minHeight: 360` so a short page can shrink the
+    // quote area instead of hiding the footer.
+    flex: 1,
+    minHeight: 0,
   },
   excerptMain: {
     gap: 14,
     paddingVertical: 4,
+    flexShrink: 1,
   },
   excerptTitle: {
     fontFamily: fonts.serif,
