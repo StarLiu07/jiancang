@@ -40,6 +40,13 @@ interface ClipCardProps {
   onLongPress?: () => void;
   /** When provided, a zoom badge on the feature cover opens the full-screen viewer. */
   onPreviewImage?: () => void;
+  /**
+   * Feature only: stretch the leaf to the height of its parent stage. The cover
+   * flexes between 200–360px, the body absorbs the remaining space and the
+   * footer sticks to the bottom edge. Defaults to false so list / detail
+   * layouts keep their intrinsic height.
+   */
+  fillHeight?: boolean;
 }
 
 export function ClipCard({
@@ -50,6 +57,7 @@ export function ClipCard({
   onPress,
   onLongPress,
   onPreviewImage,
+  fillHeight = false,
 }: ClipCardProps) {
   const { config } = useSettings();
   const cover = mediaUrl(config, clip.cover_media_url);
@@ -71,13 +79,16 @@ export function ClipCard({
         onPress={onPress}
         onLongPress={onLongPress}
         scaleTo={0.988}
-        contentStyle={styles.featureOuter}
+        style={fillHeight ? styles.featurePressableFill : undefined}
+        contentStyle={[styles.featureOuter, fillHeight && styles.featureOuterFill]}
       >
-        <View style={styles.featureCard}>
+        <View style={[styles.featureCard, fillHeight && styles.featureCardFill]}>
           {cover ? (
             <>
-              <View style={styles.featureCoverPad}>
-                <View style={styles.featureCoverFrame}>
+              <View style={[styles.featureCoverPad, fillHeight && styles.featureCoverPadFill]}>
+                <View
+                  style={fillHeight ? styles.featureCoverFrameFill : styles.featureCoverFrame}
+                >
                   <Image source={{ uri: cover }} style={styles.featureImage} resizeMode="cover" />
                   {onPreviewImage ? (
                     <Pressable
@@ -100,7 +111,7 @@ export function ClipCard({
                 </View>
               </View>
 
-              <View style={styles.featureBody}>
+              <View style={[styles.featureBody, fillHeight && styles.featureBodyFill]}>
                 <View style={styles.metaRow}>
                   <View style={styles.metaLeft}>
                     <View style={[styles.metaDot, { backgroundColor: meta.color }]} />
@@ -120,7 +131,7 @@ export function ClipCard({
                   {clip.summary || summaryFallback}
                 </Text>
 
-                <View style={styles.featureFooter}>
+                <View style={[styles.featureFooter, fillHeight && styles.featureFooterFill]}>
                   <View style={styles.footerTags}>
                     {tagList.length ? (
                       tagList.map((tag) => (
@@ -137,7 +148,7 @@ export function ClipCard({
               </View>
             </>
           ) : (
-            <View style={styles.excerptBody}>
+            <View style={[styles.excerptBody, fillHeight && styles.excerptBodyFill]}>
               <View style={styles.metaRow}>
                 <View style={styles.metaLeft}>
                   <View style={[styles.metaDot, { backgroundColor: meta.color }]} />
@@ -244,14 +255,23 @@ export function ClipCard({
 }
 
 const styles = StyleSheet.create({
+  featurePressableFill: {
+    flexGrow: 1,
+  },
   featureOuter: {
     paddingTop: 6,
     position: 'relative',
+  },
+  featureOuterFill: {
+    flexGrow: 1,
   },
   featureCard: {
     backgroundColor: colors.sheet,
     borderRadius: 14,
     ...elevation.card,
+  },
+  featureCardFill: {
+    flexGrow: 1,
   },
   clampShadow: {
     position: 'absolute',
@@ -304,11 +324,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 22,
   },
+  featureCoverPadFill: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 222,
+    maxHeight: 382,
+  },
   featureCoverFrame: {
     borderRadius: 8,
     overflow: 'hidden',
     aspectRatio: 4 / 2.65,
     backgroundColor: colors.surface,
+  },
+  featureCoverFrameFill: {
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: colors.surface,
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 200,
+    maxHeight: 360,
   },
   coverZoomBadge: {
     position: 'absolute',
@@ -336,6 +371,10 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 18,
     gap: 10,
+  },
+  featureBodyFill: {
+    flexGrow: 1,
+    flexShrink: 1,
   },
   metaRow: {
     flexDirection: 'row',
@@ -389,6 +428,9 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.borderSubtle,
   },
+  featureFooterFill: {
+    marginTop: 'auto',
+  },
   footerTags: {
     flex: 1,
     flexDirection: 'row',
@@ -413,6 +455,10 @@ const styles = StyleSheet.create({
     minHeight: 360,
     justifyContent: 'space-between',
     gap: 14,
+  },
+  excerptBodyFill: {
+    flexGrow: 1,
+    flexShrink: 1,
   },
   excerptMain: {
     gap: 14,
