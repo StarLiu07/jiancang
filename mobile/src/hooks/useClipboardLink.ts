@@ -2,7 +2,11 @@ import * as Clipboard from 'expo-clipboard';
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { loadDismissedClipboardUrl, saveDismissedClipboardUrl } from '../storage/settings';
+import {
+  loadDismissedClipboardUrl,
+  saveDismissedClipboardUrl,
+  subscribeDismissedClipboardUrl,
+} from '../storage/settings';
 import { detectClipboardLink } from '../utils/url';
 
 const POLL_INTERVAL_MS = 4000;
@@ -10,6 +14,11 @@ const POLL_INTERVAL_MS = 4000;
 interface ClipboardLinkState {
   /** The new clipboard link, or null when there is nothing to offer. */
   link: string | null;
+  /**
+   * The full clipboard text behind `link` (小红书/微信口令 keep their title and
+   * caption so a degraded extraction still has the user's original words).
+   */
+  rawText: string | null;
   dismiss: (url: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -17,9 +26,14 @@ interface ClipboardLinkState {
 /**
  * Watches the clipboard while the app is in the foreground and surfaces a link
  * only when it differs from the last link the user explicitly dismissed.
+ *
+ * Dismissals can also happen outside this screen (the native quick-clip inbox
+ * consumes an entry in the background), so the hook listens to the in-memory
+ * dismissal bus in addition to hydrating the persisted value on mount.
  */
 export function useClipboardLink(enabled = true): ClipboardLinkState {
   const [link, setLink] = useState<string | null>(null);
+  const [rawText, setRawText] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<string | null>(null);
 
   useEffect(() => {
@@ -32,11 +46,16 @@ export function useClipboardLink(enabled = true): ClipboardLinkState {
     };
   }, []);
 
+  useEffect(() => {
+    return subscribeDismissedClipboardUrl((url) => setDismissed(url));
+  }, []);
+
   const check = useCallback(async () => {
     try {
       const text = await Clipboard.getStringAsync();
       const next = detectClipboardLink(text);
       setLink((previous) => (previous === next ? previous : next));
+      setRawText(next ? text.trim() : null);
     } catch {
       // Reading the clipboard can be blocked by the OS; stay silent.
     }
@@ -45,6 +64,7 @@ export function useClipboardLink(enabled = true): ClipboardLinkState {
   useEffect(() => {
     if (!enabled) {
       setLink(null);
+      setRawText(null);
       return;
     }
 
@@ -70,5 +90,10 @@ export function useClipboardLink(enabled = true): ClipboardLinkState {
 
   const visibleLink = link && link !== dismissed ? link : null;
 
-  return { link: visibleLink, dismiss, refresh: check };
+  return {
+    link: visibleLink,
+    rawText: visibleLink ? rawText : null,
+    dismiss,
+    refresh: check,
+  };
 }

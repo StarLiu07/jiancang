@@ -99,6 +99,9 @@ export default function ReviewTodayScreen() {
   const requestRef = useRef(0);
   const loadedRef = useRef(false);
   const deckRef = useRef<ReviewDeckHandle>(null);
+  // Auto-capture may only run once per unique clipboard link, otherwise a
+  // failing ingestion would retry itself on every render (infinite loop).
+  const autoAttemptedUrlRef = useRef<string | null>(null);
   const refreshSpin = useRef(new Animated.Value(0)).current;
   const doneBadgeScale = useRef(new Animated.Value(0.7)).current;
 
@@ -120,7 +123,7 @@ export default function ReviewTodayScreen() {
   draggingRef.current = deckDragging;
   actingRef.current = acting;
 
-  const { link, dismiss, refresh: refreshClipboard } = useClipboardLink(ready);
+  const { link, rawText, dismiss, refresh: refreshClipboard } = useClipboardLink(ready);
 
   const spinRefreshIcon = useCallback(() => {
     refreshSpin.setValue(0);
@@ -295,24 +298,62 @@ export default function ReviewTodayScreen() {
     Animated.spring(doneBadgeScale, { toValue: 1, ...MOTION.springPop }).start();
   }, [finished, doneBadgeScale]);
 
-  const captureClipboard = async () => {
+  const captureClipboard = useCallback(
+    async (targetLink: string, targetText: string | null) => {
+      if (!targetLink || capturing) return;
+      autoAttemptedUrlRef.current = targetLink;
+      setCapturing(true);
+      try {
+        // Keep the whole 口令 (title + caption): if extraction degrades, the
+        // user's original words are still stored on the clip.
+        const input = (targetText ?? '').trim() || targetLink;
+        const result = await localRepo.createClip({ input }, localAiConfig, {
+          // Let the home NUC finish what the phone's IP cannot reach.
+          apiConfig: config,
+          syncEnabled: settings.syncEnabled,
+        });
+        show(
+          result.deduplicated ? '已在收藏目录' : '已收进书房',
+          result.deduplicated ? 'info' : 'success',
+        );
+        await dismiss(targetLink);
+      } catch (err) {
+        show(pickErrorMessage(err), 'error');
+      } finally {
+        setCapturing(false);
+        void refreshClipboard();
+      }
+    },
+    [
+      capturing,
+      localAiConfig,
+      config,
+      settings.syncEnabled,
+      show,
+      dismiss,
+      refreshClipboard,
+    ],
+  );
+
+  /**
+   * Opt-in zero-tap capture. The ref guard makes this a one-shot attempt per
+   * link: a 422 / network failure must never create a retry storm, and the
+   * banner stays visible so the user can still tap 「收进书房」 themselves.
+   */
+  useEffect(() => {
+    if (!ready || !settings.autoCaptureClipboard) return;
     if (!link || capturing) return;
-    setCapturing(true);
-    try {
-      const result = await localRepo.createClip({ input: link }, localAiConfig, {
-        // Let the home NUC finish what the phone's IP cannot reach.
-        apiConfig: config,
-        syncEnabled: settings.syncEnabled,
-      });
-      show(result.deduplicated ? '已在收藏目录' : '已收进书房', result.deduplicated ? 'info' : 'success');
-      await dismiss(link);
-    } catch (err) {
-      show(pickErrorMessage(err), 'error');
-    } finally {
-      setCapturing(false);
-      void refreshClipboard();
-    }
-  };
+    if (autoAttemptedUrlRef.current === link) return;
+    autoAttemptedUrlRef.current = link;
+    void captureClipboard(link, rawText);
+  }, [
+    ready,
+    settings.autoCaptureClipboard,
+    link,
+    rawText,
+    capturing,
+    captureClipboard,
+  ]);
 
   const commitAction = useCallback(
     async (action: ReviewActionType) => {
@@ -433,7 +474,7 @@ export default function ReviewTodayScreen() {
           <ClipboardBanner
             url={link}
             busy={capturing}
-            onCapture={() => void captureClipboard()}
+            onCapture={() => void captureClipboard(link, rawText)}
             onDismiss={() => void dismiss(link)}
           />
         ) : null}

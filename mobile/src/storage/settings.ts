@@ -16,6 +16,8 @@ export interface AppSettings {
   syncEnabled: boolean;
   /** Silent background sync on mount / app foreground. */
   autoSync: boolean;
+  /** Clip a link found on the clipboard as soon as the app becomes ready. */
+  autoCaptureClipboard: boolean;
 }
 
 export const DEFAULT_BASE_URL = 'http://192.168.31.98:8420';
@@ -38,6 +40,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   llmModel: DEFAULT_LLM_MODEL,
   syncEnabled: true,
   autoSync: true,
+  autoCaptureClipboard: false,
 };
 
 const SETTINGS_KEY = 'jiancang:settings:v1';
@@ -60,7 +63,7 @@ function text(value: unknown): string {
  * stored JSON at all) receives `DEFAULT_BASE_URL`, so clearing the field in
  * settings must survive a reload.
  */
-function sanitize(raw: unknown): AppSettings {
+export function sanitizeSettings(raw: unknown): AppSettings {
   const value = (raw ?? {}) as Partial<Record<keyof AppSettings, unknown>>;
   const llmModel = text(value.llmModel);
   return {
@@ -74,6 +77,8 @@ function sanitize(raw: unknown): AppSettings {
     llmModel: llmModel || DEFAULT_LLM_MODEL,
     syncEnabled: value.syncEnabled !== false,
     autoSync: value.autoSync !== false,
+    // Opt-in only: an absent / truthy-string value must never enable it.
+    autoCaptureClipboard: value.autoCaptureClipboard === true,
   };
 }
 
@@ -82,14 +87,14 @@ export async function loadSettings(): Promise<AppSettings> {
     const stored = await AsyncStorage.getItem(SETTINGS_KEY);
     if (!stored) return { ...DEFAULT_SETTINGS };
     const parsed: unknown = JSON.parse(stored);
-    return sanitize(parsed);
+    return sanitizeSettings(parsed);
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
 }
 
 export async function saveSettings(settings: AppSettings): Promise<AppSettings> {
-  const normalized = sanitize(settings);
+  const normalized = sanitizeSettings(settings);
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(normalized));
   return normalized;
 }
@@ -102,9 +107,46 @@ export async function loadDismissedClipboardUrl(): Promise<string | null> {
   }
 }
 
+export type DismissedClipboardUrlListener = (url: string) => void;
+
+const dismissedClipboardUrlListeners = new Set<DismissedClipboardUrlListener>();
+
+/**
+ * Listen for in-app dismissals (manual "忽略" or a quick-clip inbox entry that
+ * landed while the home screen was already mounted).
+ *
+ * Storage itself is async, so subscribers are notified synchronously when the
+ * save is requested; the write stays best effort. Returns an idempotent
+ * unsubscribe function.
+ */
+export function subscribeDismissedClipboardUrl(
+  listener: DismissedClipboardUrlListener,
+): () => void {
+  if (typeof listener !== 'function') return () => undefined;
+  dismissedClipboardUrlListeners.add(listener);
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    dismissedClipboardUrlListeners.delete(listener);
+  };
+}
+
+function notifyDismissedClipboardUrl(url: string): void {
+  for (const listener of Array.from(dismissedClipboardUrlListeners)) {
+    try {
+      listener(url);
+    } catch {
+      // A broken subscriber must never block the save.
+    }
+  }
+}
+
 export async function saveDismissedClipboardUrl(url: string): Promise<void> {
+  const value = typeof url === 'string' ? url : '';
+  notifyDismissedClipboardUrl(value);
   try {
-    await AsyncStorage.setItem(CLIPBOARD_DISMISSED_KEY, url);
+    await AsyncStorage.setItem(CLIPBOARD_DISMISSED_KEY, value);
   } catch {
     // Best effort only: dismissing the banner must never break the screen.
   }

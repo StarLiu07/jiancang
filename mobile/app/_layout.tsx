@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { ToastProvider } from '../src/components/Toast';
+import { useQuickClipInbox } from '../src/hooks/useQuickClipInbox';
 import { useShareCapture } from '../src/hooks/useShareCapture';
 import {
   localRepo,
@@ -22,6 +23,15 @@ const PENDING_COUNT_REFRESH_MS = 250;
 /** No UI: just keeps the native share sheet wired to the local repository. */
 function ShareCaptureGate() {
   useShareCapture();
+  return null;
+}
+
+/**
+ * No UI: drains the native quick-clip inbox (control-center tile / shortcut /
+ * deep link) into the local library and clears the matching clipboard banner.
+ */
+function QuickClipInboxGate() {
+  useQuickClipInbox();
   return null;
 }
 
@@ -76,6 +86,7 @@ export default function RootLayout() {
             <SyncProvider onDataSynced={notifyLocalChange}>
               <ShareIntentProvider options={{ scheme: 'jiancang', resetOnBackground: false }}>
                 <ShareCaptureGate />
+                <QuickClipInboxGate />
                 <LocalLifecycleGate />
                 <StatusBar style="dark" backgroundColor={colors.bg} />
                 <Stack
