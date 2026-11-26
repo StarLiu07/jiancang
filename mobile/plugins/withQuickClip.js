@@ -453,6 +453,7 @@ import android.content.Intent
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import __APP_ID__.R
 
 /** Quick Settings tile: one tap collects whatever link is on the clipboard. */
 class QuickClipTileService : TileService() {

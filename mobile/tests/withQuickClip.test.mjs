@@ -254,6 +254,7 @@ test('renderQuickClipKotlinFiles renders the three package-corrected sources', (
   assert.match(activity, /800/);
 
   const tile = files['QuickClipTileService.kt'];
+  assert.match(tile, new RegExp(`^import ${APP_ID.replaceAll('.', '\\.')}\\.R$`, 'm'));
   assert.match(tile, /: TileService\(\)/);
   assert.match(tile, /onStartListening/);
   assert.match(tile, /unlockAndRun/);
